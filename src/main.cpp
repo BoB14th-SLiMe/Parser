@@ -1,11 +1,14 @@
 #include <iostream>
 #include <pcap.h>
 #include "packet_parser/PacketParser.h"
+#include "packet_parser/network_headers.h"
 
-// pcap_loop 콜백 함수
 void packet_handler(u_char* user_data, const struct pcap_pkthdr* header, const u_char* packet) {
     PacketParser* parser = reinterpret_cast<PacketParser*>(user_data);
-    parser->parse(header, packet);
+    const EthernetHeader* eth_header = (const EthernetHeader*)packet;
+    if (ntohs(eth_header->eth_type) == 0x0800) { // IPv4
+         parser->parse(packet);
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -21,18 +24,14 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    PacketParser parser;
+    // output/ 디렉토리가 미리 생성되어 있어야 합니다.
+    PacketParser parser("output/tcp_packets.csv", "output/udp_packets.csv");
 
-    // pcap_loop를 통해 파일의 모든 패킷을 처리
-    // -1은 파일 끝까지 모든 패킷을 처리하라는 의미
-    if (pcap_loop(handle, -1, packet_handler, reinterpret_cast<u_char*>(&parser)) < 0) {
+    if (pcap_loop(handle, 0, packet_handler, reinterpret_cast<u_char*>(&parser)) < 0) {
         std::cerr << "pcap_loop() failed: " << pcap_geterr(handle) << std::endl;
-        pcap_close(handle);
-        return 3;
     }
 
-    std::cout << "Packet processing finished." << std::endl;
-
+    std::cout << "CSV file generation complete." << std::endl;
     pcap_close(handle);
     return 0;
 }
