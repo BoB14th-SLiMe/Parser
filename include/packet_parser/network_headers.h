@@ -23,7 +23,7 @@ struct IPHeader {
     uint16_t ip_id;        // Identification
     uint16_t ip_off;       // Fragment Offset
     uint8_t  ip_ttl;       // Time to Live
-    uint8_t  ip_p;         // Protocol (e.g., 6 for TCP)
+    uint8_t  ip_p;         // Protocol (e.g., 6 for TCP, 17 for UDP)
     uint16_t ip_sum;       // Checksum
     struct   in_addr ip_src, ip_dst; // Source and Destination Address
 };
@@ -42,6 +42,16 @@ struct TCPHeader {
     uint16_t th_urp;       // Urgent Pointer
 };
 
+// UDP Header (8 bytes)
+struct UDPHeader {
+    uint16_t uh_sport;     // Source Port
+    uint16_t uh_dport;     // Destination Port
+    uint16_t uh_ulen;      // UDP Length
+    uint16_t uh_sum;       // UDP Checksum
+};
+
+
 #pragma pack(pop)
 
 #endif // NETWORK_HEADERS_H
+
