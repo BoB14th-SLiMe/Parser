@@ -7,7 +7,7 @@
 #include <memory>
 #include <fstream>
 #include <map>
-#include "IProtocolParser.h" // 새로운 인터페이스 포함
+#include "./protocols/IProtocolParser.h" // 새로운 인터페이스 포함
 
 class PacketParser {
 public:
