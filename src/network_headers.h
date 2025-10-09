@@ -59,4 +59,3 @@ struct COTPHeader {
 #pragma pack(pop)
 
 #endif // NETWORK_HEADERS_H
-
