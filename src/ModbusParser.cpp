@@ -57,6 +57,7 @@ void ModbusParser::parse(const PacketInfo& info) {
             *m_output_stream << "{\"timestamp\":\"" << info.timestamp << "\",\"type\":\"Response\","
                            << "\"src_ip\":\"" << info.src_ip << "\",\"src_port\":" << info.src_port << ","
                            << "\"dst_ip\":\"" << info.dst_ip << "\",\"dst_port\":" << info.dst_port << ","
+                           << "\"seq\":" << info.tcp_seq << ",\"ack\":" << info.tcp_ack << ",\"ip_len\":" << info.ip_len << ","
                            << "\"trans_id\":" << trans_id << ","
                            << "\"details\":" << details_json << "}\n";
         }
@@ -86,6 +87,7 @@ void ModbusParser::parse(const PacketInfo& info) {
         *m_output_stream << "{\"timestamp\":\"" << info.timestamp << "\",\"type\":\"Query\","
                        << "\"src_ip\":\"" << info.src_ip << "\",\"src_port\":" << info.src_port << ","
                        << "\"dst_ip\":\"" << info.dst_ip << "\",\"dst_port\":" << info.dst_port << ","
+                       << "\"seq\":" << info.tcp_seq << ",\"ack\":" << info.tcp_ack << ",\"ip_len\":" << info.ip_len << ","
                        << "\"trans_id\":" << trans_id << ","
                        << "\"details\":" << details_json << "}\n";
     }

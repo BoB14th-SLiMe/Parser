@@ -17,12 +17,15 @@ struct PacketInfo {
     uint16_t dst_port;
     const u_char* payload;
     int payload_size;
+    // 새로 추가된 필드들
+    uint32_t tcp_seq;
+    uint32_t tcp_ack;
+    uint16_t ip_len;
 };
 
 // 모든 프로토콜 파서가 구현해야 하는 추상 기본 클래스
 class IProtocolParser {
 public:
-    // 소멸자를 `= default` 없이 선언만 합니다.
     virtual ~IProtocolParser();
 
     // 프로토콜의 이름을 반환합니다 (예: "modbus_tcp").

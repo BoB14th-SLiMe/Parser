@@ -85,6 +85,7 @@ void S7CommParser::parse(const PacketInfo& info) {
         *m_output_stream << "{\"timestamp\":\"" << info.timestamp << "\",\"type\":\"" << get_s7comm_rosctr_name(rosctr) << "\","
                        << "\"src_ip\":\"" << info.src_ip << "\",\"src_port\":" << info.src_port << ","
                        << "\"dst_ip\":\"" << info.dst_ip << "\",\"dst_port\":" << info.dst_port << ","
+                       << "\"seq\":" << info.tcp_seq << ",\"ack\":" << info.tcp_ack << ",\"ip_len\":" << info.ip_len << ","
                        << "\"pdu_ref\":" << pdu_ref << ","
                        << "\"details\":" << details_json << "}\n";
         
@@ -122,6 +123,7 @@ void S7CommParser::parse(const PacketInfo& info) {
         *m_output_stream << "{\"timestamp\":\"" << info.timestamp << "\",\"type\":\"Job\","
                        << "\"src_ip\":\"" << info.src_ip << "\",\"src_port\":" << info.src_port << ","
                        << "\"dst_ip\":\"" << info.dst_ip << "\",\"dst_port\":" << info.dst_port << ","
+                       << "\"seq\":" << info.tcp_seq << ",\"ack\":" << info.tcp_ack << ",\"ip_len\":" << info.ip_len << ","
                        << "\"pdu_ref\":" << pdu_ref << ","
                        << "\"details\":" << details_json << "}\n";
     }
@@ -137,7 +139,6 @@ std::string S7CommParser::parse_pdu(const u_char* s7pdu, int s7pdu_len, bool is_
     uint16_t param_len = safe_ntohs(s7pdu + 6);
     uint16_t data_len = safe_ntohs(s7pdu + 8);
     
-    // Header size varies based on ROSCTR type
     int header_size = (rosctr == 0x01 || rosctr == 0x07) ? 10 : 12;
     if (s7pdu_len < header_size) return "{}";
     
@@ -165,11 +166,11 @@ std::string S7CommParser::parse_pdu(const u_char* s7pdu, int s7pdu_len, bool is_
                         if (item_ptr[8] == 0x84) ss << ",\"db_number\":" << safe_ntohs(item_ptr + 6);
                         
                         uint32_t addr = s7_addr_to_int(item_ptr + 9);
-                        ss << ",\"start_address\":" << (addr >> 3); // Address is in bits, convert to byte
+                        ss << ",\"start_address\":" << (addr >> 3); 
                         ss << ",\"amount\":" << safe_ntohs(item_ptr + 4);
                         ss << "}";
                         
-                        item_ptr += 12; // Move to next item
+                        item_ptr += 12; 
                     }
                     ss << "]";
                 }
@@ -180,10 +181,9 @@ std::string S7CommParser::parse_pdu(const u_char* s7pdu, int s7pdu_len, bool is_
 
     if(data_len > 0 && (s7pdu_len >= header_size + param_len + data_len)) {
         ss << ",\"data\":{";
-        if (rosctr == 3 && req_info) { // Ack_Data, typically for Read Var Response
+        if (rosctr == 3 && req_info) { 
             const u_char* data_item_ptr = data;
             if (req_info->items.empty() && data_len > 0){
-                 // Data exists but no request info, just dump hex
                  ss << "\"value\":\"";
                  std::stringstream hex_ss;
                  hex_ss << std::hex << std::setfill('0');
@@ -194,13 +194,13 @@ std::string S7CommParser::parse_pdu(const u_char* s7pdu, int s7pdu_len, bool is_
             } else {
                  ss << "\"items\":[";
                  for(size_t i = 0; i < req_info->items.size(); ++i) {
-                    if ((data_item_ptr + 4) > (data + data_len)) break; // Bounds check for header
+                    if ((data_item_ptr + 4) > (data + data_len)) break; 
                     
                     ss << (i > 0 ? "," : "") << "{";
                     uint8_t return_code = data_item_ptr[0];
                     ss << "\"return_code\":" << (int)return_code;
 
-                    if (return_code == 0xff) { // Success
+                    if (return_code == 0xff) { 
                         uint16_t read_len_bits = safe_ntohs(data_item_ptr + 2);
                         uint16_t read_len_bytes = (read_len_bits + 7) / 8;
 
@@ -215,7 +215,7 @@ std::string S7CommParser::parse_pdu(const u_char* s7pdu, int s7pdu_len, bool is_
                            }
                            ss << hex_ss.str() << "\"";
                            data_item_ptr += 4 + read_len_bytes;
-                           if (read_len_bytes % 2 != 0) data_item_ptr++; // align to 2 bytes
+                           if (read_len_bytes % 2 != 0) data_item_ptr++; 
                         } else {
                            data_item_ptr += 4;
                         }
