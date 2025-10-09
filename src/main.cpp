@@ -5,7 +5,6 @@
 
 void packet_handler(u_char* user_data, const struct pcap_pkthdr* header, const u_char* packet) {
     PacketParser* parser = reinterpret_cast<PacketParser*>(user_data);
-    // (핵심 수정) parse 함수에 header와 packet을 모두 전달
     parser->parse(header, packet);
 }
 
@@ -25,9 +24,9 @@ int main(int argc, char* argv[]) {
     if (pcap_loop(handle, 0, packet_handler, reinterpret_cast<u_char*>(&parser)) < 0) {
         std::cerr << "pcap_loop() failed: " << pcap_geterr(handle) << std::endl;
     }
-
-    parser.save_profiles();
-    std::cout << "Deep Packet Inspection and Profiling complete." << std::endl;
+    
+    std::cout << "Deep Packet Inspection complete." << std::endl;
     pcap_close(handle);
     return 0;
 }
+
