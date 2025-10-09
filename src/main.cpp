@@ -1,12 +1,12 @@
 #include <iostream>
 #include <pcap.h>
-#include "packet_parser/PacketParser.h"
-#include "packet_parser/network_headers.h"
+#include "PacketParser.h"
+#include "network_headers.h"
 
 void packet_handler(u_char* user_data, const struct pcap_pkthdr* header, const u_char* packet) {
     PacketParser* parser = reinterpret_cast<PacketParser*>(user_data);
-    // (수정) 파서에 패킷의 전체 길이를 전달
-    parser->parse(packet, header->caplen);
+    // header와 packet을 모두 전달
+    parser->parse(header, packet);
 }
 
 int main(int argc, char* argv[]) {
@@ -26,11 +26,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "pcap_loop() failed: " << pcap_geterr(handle) << std::endl;
     }
     
-    // (추가) 파싱 종료 후, 알려지지 않은 프로토콜의 프로파일링 결과를 파일로 저장
-    parser.save_profiles();
-
     std::cout << "Deep Packet Inspection and Profiling complete." << std::endl;
     pcap_close(handle);
     return 0;
 }
-
