@@ -23,6 +23,7 @@ add_executable(parser
     src/protocols/ModbusParser.cpp
     src/protocols/S7CommParser.cpp
     src/protocols/IProtocolParser.cpp
+    src/protocols/XgtFenParser.cpp
 )
 
 # --- pcap 라이브러리 수동으로 찾기 ---

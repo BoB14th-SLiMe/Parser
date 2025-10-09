@@ -12,6 +12,7 @@
 // 구체적인 파서 구현 포함
 #include "./protocols/ModbusParser.h"
 #include "./protocols/S7CommParser.h"
+#include "./protocols/XgtFenParser.h"
 
 PacketParser::PacketParser(const std::string& output_dir)
     : m_output_dir(output_dir) {
@@ -20,7 +21,8 @@ PacketParser::PacketParser(const std::string& output_dir)
     // C++11 호환성을 위해 std::make_unique 대신 new 사용
     m_protocol_parsers.push_back(std::unique_ptr<S7CommParser>(new S7CommParser()));
     m_protocol_parsers.push_back(std::unique_ptr<ModbusParser>(new ModbusParser()));
-    
+    m_protocol_parsers.push_back(std::unique_ptr<XgtFenParser>(new XgtFenParser()));
+
     for (const auto& parser : m_protocol_parsers) {
         initialize_output_stream(parser->getName());
         parser->setOutputStream(&m_output_streams[parser->getName()]);
