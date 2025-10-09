@@ -1,5 +1,5 @@
 #include "PacketParser.h"
-#include "network_headers.h"
+#include "./network/network_headers.h"
 #include <iostream>
 #include <netinet/in.h>
 #include <iomanip>
@@ -10,8 +10,8 @@
 #include <memory>
 
 // 구체적인 파서 구현 포함
-#include "ModbusParser.h"
-#include "S7CommParser.h"
+#include "./protocols/ModbusParser.h"
+#include "./protocols/S7CommParser.h"
 
 PacketParser::PacketParser(const std::string& output_dir)
     : m_output_dir(output_dir) {

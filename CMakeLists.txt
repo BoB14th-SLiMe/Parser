@@ -20,9 +20,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_executable(parser
     src/main.cpp
     src/PacketParser.cpp
-    src/ModbusParser.cpp
-    src/S7CommParser.cpp
-    src/IProtocolParser.cpp
+    src/protocols/ModbusParser.cpp
+    src/protocols/S7CommParser.cpp
+    src/protocols/IProtocolParser.cpp
 )
 
 # --- pcap 라이브러리 수동으로 찾기 ---
