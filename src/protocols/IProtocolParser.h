@@ -5,7 +5,7 @@
 #include <fstream>
 #include <map>
 #include <pcap.h>
-#include "network_headers.h"
+#include "../network/network_headers.h"
 
 // 파서 간에 공통 패킷 정보를 전달하기 위한 구조체
 struct PacketInfo {
