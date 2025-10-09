@@ -23,7 +23,6 @@ add_executable(parser
 )
 
 # --- pcap 라이브러리 수동으로 찾기 ---
-# Homebrew 등 다른 경로에 설치된 경우를 위해 HINTS 추가
 find_path(PCAP_INCLUDE_DIR pcap.h HINTS /opt/homebrew/include)
 find_library(PCAP_LIBRARY NAMES pcap HINTS /opt/homebrew/lib)
 
@@ -32,10 +31,10 @@ if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
 endif()
 
 # --- 헤더 파일 검색 경로 추가 ---
-# 프로젝트의 헤더 파일이 위치한 디렉토리를 지정합니다.
-# 여기서는 PacketParser.h, network_headers.h가 src 폴더에 있다고 가정합니다.
+# 1. 우리 프로젝트의 'include' 폴더를 검색 경로에 추가합니다.
+# 2. pcap 라이브러리의 헤더 폴더를 검색 경로에 추가합니다.
 target_include_directories(parser PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     ${PCAP_INCLUDE_DIR}
 )
 
