@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <ctime>
-#include <memory> // std::unique_ptr를 위해 명시적으로 포함
+#include <memory>
 
 // 구체적인 파서 구현 포함
 #include "ModbusParser.h"
@@ -17,12 +17,10 @@ PacketParser::PacketParser(const std::string& output_dir)
     : m_output_dir(output_dir) {
     mkdir(m_output_dir.c_str(), 0755);
 
-    // --- 여기에 모든 프로토콜 파서를 등록합니다 ---
     // C++11 호환성을 위해 std::make_unique 대신 new 사용
     m_protocol_parsers.push_back(std::unique_ptr<S7CommParser>(new S7CommParser()));
     m_protocol_parsers.push_back(std::unique_ptr<ModbusParser>(new ModbusParser()));
     
-    // --- 각 파서의 출력 파일을 초기화합니다 ---
     for (const auto& parser : m_protocol_parsers) {
         initialize_output_stream(parser->getName());
         parser->setOutputStream(&m_output_streams[parser->getName()]);
@@ -55,7 +53,6 @@ std::string PacketParser::get_canonical_flow_id(const std::string& ip1_str, uint
 }
 
 void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet) {
-    // --- L2/L3/L4 파싱은 동일하게 유지 ---
     if (!packet || header->caplen < sizeof(EthernetHeader)) return;
 
     // Timestamp 생성
@@ -91,12 +88,14 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
         uint16_t dst_port = ntohs(tcp_header->dport);
         std::string flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
         
-        // --- 위임 로직 ---
-        // 등록된 파서들을 순회하며 작업을 위임합니다.
+        // TCP/IP 정보 추출
+        uint16_t ip_len = ntohs(ip_header->len);
+        uint32_t tcp_seq = ntohl(tcp_header->seq);
+        uint32_t tcp_ack = ntohl(tcp_header->ack);
+
         for (const auto& parser : m_protocol_parsers) {
             if (parser->isProtocol(payload, payload_size)) {
                 
-                // 정보 구조체 구성
                 PacketInfo info = {
                     timestamp,
                     flow_id,
@@ -105,11 +104,14 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
                     dst_ip_str,
                     dst_port,
                     payload,
-                    payload_size
+                    payload_size,
+                    tcp_seq,
+                    tcp_ack,
+                    ip_len
                 };
 
                 parser->parse(info);
-                break; // 핸들러를 찾았으므로 검색 중단
+                break;
             }
         }
     }
