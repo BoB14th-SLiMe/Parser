@@ -41,18 +41,17 @@ struct TCPHeader {
     uint16_t urp;       // Urgent Pointer
 };
 
-// TPKT Header (ISO-on-TCP) - 4 bytes
-struct TPKTHeader {
-    uint8_t version;
-    uint8_t reserved;
-    uint16_t length;
-};
-
-// COTP Header (Connection Oriented Transport Protocol) - 3 bytes for DT
-struct COTPHeader {
-    uint8_t length;
-    uint8_t pdu_type;
-    uint8_t last_data_unit; // For DT Data
+// ARP Header (28 bytes for IPv4 over Ethernet)
+struct ARPHeader {
+    uint16_t htype;    // Hardware Type
+    uint16_t ptype;    // Protocol Type
+    uint8_t  hlen;     // Hardware Address Length
+    uint8_t  plen;     // Protocol Address Length
+    uint16_t oper;     // Operation Code
+    uint8_t  sha[6];   // Sender Hardware Address
+    uint8_t  spa[4];   // Sender Protocol Address
+    uint8_t  tha[6];   // Target Hardware Address
+    uint8_t  tpa[4];   // Target Protocol Address
 };
 
 

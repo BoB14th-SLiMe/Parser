@@ -7,7 +7,10 @@
 #include <memory>
 #include <fstream>
 #include <map>
-#include "./protocols/IProtocolParser.h" // 새로운 인터페이스 포함
+#include <sys/time.h>
+#include "./protocols/IProtocolParser.h"
+#include "./protocols/ArpParser.h"
+#include "./protocols/TcpSessionParser.h" // TcpSessionParser 헤더 포함
 
 class PacketParser {
 public:
@@ -17,15 +20,20 @@ public:
 
 private:
     std::string m_output_dir;
-    
-    // 프로토콜 이름을 키로 사용하는 파일 스트림 맵
     std::map<std::string, std::ofstream> m_output_streams;
-
-    // 사용 가능한 모든 프로토콜 파서 목록
+    
+    // IP 기반 프로토콜 파서 목록 (IProtocolParser 상속)
     std::vector<std::unique_ptr<IProtocolParser>> m_protocol_parsers;
+    // 독립적인 파서들
+    std::unique_ptr<ArpParser> m_arp_parser;
+    std::unique_ptr<TcpSessionParser> m_tcp_session_parser;
+
+    // 세션별 시작 시간을 기록하기 위한 맵
+    std::map<std::string, struct timeval> m_flow_start_times;
 
     std::string get_canonical_flow_id(const std::string& ip1, uint16_t port1, const std::string& ip2, uint16_t port2);
     void initialize_output_stream(const std::string& protocol);
 };
 
 #endif // PACKET_PARSER_H
+

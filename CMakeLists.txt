@@ -24,6 +24,12 @@ add_executable(parser
     src/protocols/S7CommParser.cpp
     src/protocols/IProtocolParser.cpp
     src/protocols/XgtFenParser.cpp
+    src/protocols/Dnp3Parser.cpp
+    src/protocols/DnsParser.cpp
+    src/protocols/GenericParser.cpp
+    src/protocols/ArpParser.cpp
+    src/protocols/UnknownParser.cpp
+    src/protocols/TcpSessionParser.cpp
 )
 
 # --- pcap 라이브러리 수동으로 찾기 ---
