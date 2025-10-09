@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <arpa/inet.h>
 
-// 컴파일러의 자동 패딩 방지
 #pragma pack(push, 1)
 
 // Ethernet Header (14 bytes)
@@ -42,12 +41,18 @@ struct TCPHeader {
     uint16_t urp;       // Urgent Pointer
 };
 
-// UDP Header (8 bytes)
-struct UDPHeader {
-    uint16_t sport; // Source Port
-    uint16_t dport; // Destination Port
-    uint16_t len;   // UDP Length
-    uint16_t sum;   // UDP Checksum
+// TPKT Header (ISO-on-TCP) - 4 bytes
+struct TPKTHeader {
+    uint8_t version;
+    uint8_t reserved;
+    uint16_t length;
+};
+
+// COTP Header (Connection Oriented Transport Protocol) - 3 bytes for DT
+struct COTPHeader {
+    uint8_t length;
+    uint8_t pdu_type;
+    uint8_t last_data_unit; // For DT Data
 };
 
 
