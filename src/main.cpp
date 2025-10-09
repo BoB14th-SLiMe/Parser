@@ -1,7 +1,6 @@
 #include <iostream>
 #include <pcap.h>
 #include "PacketParser.h"
-#include "network_headers.h"
 
 void packet_handler(u_char* user_data, const struct pcap_pkthdr* header, const u_char* packet) {
     PacketParser* parser = reinterpret_cast<PacketParser*>(user_data);
@@ -20,7 +19,7 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    PacketParser parser;
+    PacketParser parser; // PacketParser 객체 생성
     if (pcap_loop(handle, 0, packet_handler, reinterpret_cast<u_char*>(&parser)) < 0) {
         std::cerr << "pcap_loop() failed: " << pcap_geterr(handle) << std::endl;
     }
@@ -29,4 +28,3 @@ int main(int argc, char* argv[]) {
     pcap_close(handle);
     return 0;
 }
-
