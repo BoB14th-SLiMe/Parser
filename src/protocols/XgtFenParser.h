@@ -15,14 +15,14 @@ struct XgtFenRequestInfo {
 
 class XgtFenParser : public IProtocolParser {
 public:
+    ~XgtFenParser() override; // 소멸자 선언 추가
+
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
     void setOutputStream(std::ofstream* stream) override;
 
 private:
-    std::string parse_pdu(const u_char* pdu, int pdu_len, bool is_request, const XgtFenRequestInfo* req_info);
-
     // Flow ID와 Invoke ID를 키로 사용하여 보류 중인 요청을 관리
     std::map<std::string, std::map<uint16_t, XgtFenRequestInfo>> m_pending_requests;
     std::ofstream* m_output_stream = nullptr;

@@ -17,10 +17,9 @@ struct PacketInfo {
     uint16_t dst_port;
     const u_char* payload;
     int payload_size;
-    // 새로 추가된 필드들
     uint32_t tcp_seq;
     uint32_t tcp_ack;
-    uint16_t ip_len;
+    uint8_t tcp_flags;
 };
 
 // 모든 프로토콜 파서가 구현해야 하는 추상 기본 클래스
@@ -28,18 +27,10 @@ class IProtocolParser {
 public:
     virtual ~IProtocolParser();
 
-    // 프로토콜의 이름을 반환합니다 (예: "modbus_tcp").
     virtual std::string getName() const = 0;
-
-    // 주어진 페이로드가 해당 프로토콜에 속하는지 확인합니다.
     virtual bool isProtocol(const u_char* payload, int size) const = 0;
-
-    // 해당 프로토콜의 메인 파싱 로직을 수행합니다.
     virtual void parse(const PacketInfo& info) = 0;
-
-    // 이 파서에 대한 출력 스트림을 설정합니다.
     virtual void setOutputStream(std::ofstream* stream) = 0;
 };
 
 #endif // I_PROTOCOL_PARSER_H
-
