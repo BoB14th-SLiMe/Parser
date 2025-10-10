@@ -124,7 +124,7 @@ void XgtFenParser::parse(const PacketInfo& info) {
         return; // Unknown source or unmapped response
     }
     
-    *m_output_stream << "{\"ts\":\"" << info.timestamp << "\","
+    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                    << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                    << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                    << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
