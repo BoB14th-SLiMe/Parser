@@ -7,6 +7,7 @@
 // Modbus 요청 정보를 저장하는 구조체
 struct ModbusRequestInfo {
     uint8_t function_code = 0;
+    uint16_t start_address = 0; 
 };
 
 class ModbusParser : public IProtocolParser {

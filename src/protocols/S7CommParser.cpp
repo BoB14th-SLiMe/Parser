@@ -130,7 +130,7 @@ void S7CommParser::parse(const PacketInfo& info) {
         return; // Not a job or a mapped response
     }
     
-    *m_output_stream << "{\"ts\":\"" << info.timestamp << "\","
+    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                    << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                    << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                    << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","

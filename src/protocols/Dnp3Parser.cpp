@@ -27,7 +27,7 @@ void Dnp3Parser::parse(const PacketInfo& info) {
         details_ss << "{\"len\":" << info.payload_size << "}";
     }
 
-    *m_output_stream << info.timestamp
+    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                    << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                    << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                    << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","

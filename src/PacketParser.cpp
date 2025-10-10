@@ -79,6 +79,18 @@ std::string PacketParser::get_canonical_flow_id(const std::string& ip1_str, uint
 void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet) {
     if (!packet || header->caplen < sizeof(EthernetHeader)) return;
 
+    // --- Timestamp Formatting ---
+    // ElasticSearch 형식(@timestamp)에 맞는 타임스탬프 문자열을 미리 생성합니다.
+    std::stringstream time_ss;
+    struct tm *ltime;
+    char timestr[40];
+    ltime = localtime(&header->ts.tv_sec);
+    // ISO 8601 형식과 유사하게 변경 (e.g., "YYYY-MM-DDTHH:MM:SS.microsZ")
+    strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", ltime);
+    time_ss << timestr << "." << std::setw(6) << std::setfill('0') << header->ts.tv_usec << "Z";
+    std::string timestamp_str = time_ss.str();
+
+
     const EthernetHeader* eth_header = (const EthernetHeader*)(packet);
     uint16_t eth_type = ntohs(eth_header->eth_type);
     const u_char* l3_payload = packet + sizeof(EthernetHeader);
@@ -87,14 +99,10 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
     if (eth_type == 0x0806) { // ARP (Layer 2)
         std::string details_json = m_arp_parser->parse(l3_payload, l3_payload_size);
         
-        struct tm *ltime;
-        char timestr[40];
-        ltime = localtime(&header->ts.tv_sec);
-        strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", ltime);
-        
         std::ofstream& out_stream = m_output_streams["arp"];
         if (out_stream.is_open()) {
-            out_stream << "{\"ts\":\"" << timestr << "." << std::setw(6) << std::setfill('0') << header->ts.tv_usec << "\","
+            // @timestamp 필드를 사용하여 완전한 JSON 객체로 만듭니다.
+            out_stream << "{\"@timestamp\":\"" << timestamp_str << "\","
                        << "\"d\":" << details_json << "}\n";
         }
     }
@@ -136,18 +144,6 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
             }
 
             std::string flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
-            std::stringstream time_ss;
-            if (m_flow_start_times.find(flow_id) == m_flow_start_times.end()) {
-                m_flow_start_times[flow_id] = header->ts;
-                struct tm *ltime;
-                char timestr[40];
-                ltime = localtime(&header->ts.tv_sec);
-                strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", ltime);
-                time_ss << "{\"ts\":\"" << timestr << "." << std::setw(6) << std::setfill('0') << header->ts.tv_usec << "\",";
-            } else {
-                long long delta_us = (header->ts.tv_sec - m_flow_start_times[flow_id].tv_sec) * 1000000LL + (header->ts.tv_usec - m_flow_start_times[flow_id].tv_usec);
-                time_ss << "{\"td\":" << delta_us << ",";
-            }
             
             // --- 페이로드 크기에 따른 로직 분기 ---
             if (payload_size <= 0 && ip_header->p == IPPROTO_TCP) {
@@ -155,7 +151,8 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
                 std::ofstream& out_stream = m_output_streams["tcp_session"];
                 if (out_stream.is_open()) {
                     std::string details_json = m_tcp_session_parser->parse(tcp_seq, tcp_ack, tcp_flags);
-                    out_stream << time_ss.str() 
+                    // JSON 형식을 수정하여 완전한 객체로 만듭니다.
+                    out_stream << "{\"@timestamp\":\"" << timestamp_str << "\"," 
                                << "\"sip\":\"" << src_ip_str << "\",\"sp\":" << src_port << ","
                                << "\"dip\":\"" << dst_ip_str << "\",\"dp\":" << dst_port << ","
                                << "\"d\":" << details_json << "}\n";
@@ -164,12 +161,14 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
             }
 
             bool matched = false;
+            // PacketInfo 구조체에 포맷된 타임스탬프 문자열을 전달합니다.
+            PacketInfo info = {
+                timestamp_str, flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
+                payload, payload_size, tcp_seq, tcp_ack, tcp_flags
+            };
+
             for (const auto& parser : m_protocol_parsers) {
                 if (parser->getName() != "unknown" && parser->isProtocol(payload, payload_size)) {
-                    PacketInfo info = {
-                        time_ss.str(), flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
-                        payload, payload_size, tcp_seq, tcp_ack, tcp_flags
-                    };
                     parser->parse(info);
                     matched = true;
                     break;
@@ -177,10 +176,8 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
             }
 
             if (!matched) {
-                 m_protocol_parsers.back()->parse({time_ss.str(), flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
-                        payload, payload_size, tcp_seq, tcp_ack, tcp_flags});
+                 m_protocol_parsers.back()->parse(info);
             }
         }
     }
 }
-
