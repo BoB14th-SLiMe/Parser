@@ -13,7 +13,8 @@ static uint16_t safe_ntohs(const u_char* ptr) {
     return ntohs(val_n);
 }
 
-// Optimized PDU Parser
+// --- PDU Parser ---
+// Modbus PDU(Protocol Data Unit)를 파싱하여 JSON 문자열로 변환합니다.
 std::string parse_pdu_optimized(const u_char* pdu, int pdu_len, const ModbusRequestInfo* req_info) {
     if (pdu_len < 1) return "{}";
     uint8_t function_code = pdu[0];
@@ -28,9 +29,26 @@ std::string parse_pdu_optimized(const u_char* pdu, int pdu_len, const ModbusRequ
         if (data_len >= 1) ss << ",\"err\":" << (int)data[0];
     } else {
         switch (function_code) {
-            case 1: case 2: case 3: case 4: { // Read Coils/Inputs/Registers
+            case 1: case 2: // Read Coils / Read Discrete Inputs
+            case 3: case 4: { // Read Holding Registers / Read Input Registers
                 if (req_info) { // Response
-                    if (data_len >= 1) ss << ",\"bc\":" << (int)data[0];
+                    if (data_len >= 1) {
+                        uint8_t byte_count = data[0];
+                        ss << ",\"bc\":" << (int)byte_count;
+                        // --- MODIFICATION START: Change register format to key-value object ---
+                        if (byte_count > 0 && data_len >= 1 + byte_count) {
+                            ss << ",\"regs\":{"; // Use JSON object instead of array
+                            const u_char* reg_data = data + 1;
+                            // Registers are 2 bytes each. Use start_address from request info.
+                            for (int i = 0; i < byte_count / 2; ++i) {
+                                ss << (i > 0 ? "," : "") 
+                                   << "\"" << req_info->start_address + i << "\":" // Key: address
+                                   << safe_ntohs(reg_data + (i * 2));             // Value: register value
+                            }
+                            ss << "}";
+                        }
+                        // --- MODIFICATION END ---
+                    }
                 } else { // Request
                     if (data_len >= 4) {
                         ss << ",\"addr\":" << safe_ntohs(data)
@@ -90,14 +108,29 @@ void ModbusParser::parse(const PacketInfo& info) {
     } else { // Request
         ModbusRequestInfo new_req;
         new_req.function_code = pdu[0];
+        
+        // --- MODIFICATION START: Store start address from request ---
+        uint8_t fc = pdu[0];
+        // For read/write functions, the address is the first data field (2 bytes).
+        if ((fc >= 1 && fc <= 6) || fc == 15 || fc == 16) {
+            if (pdu_len >= 3) { // Ensure there is enough data for the address
+                new_req.start_address = safe_ntohs(pdu + 1);
+            }
+        }
+        // --- MODIFICATION END ---
+
         m_pending_requests[info.flow_id][trans_id] = new_req;
         details_json = parse_pdu_optimized(pdu, pdu_len, nullptr);
     }
     
-    *m_output_stream << "{\"ts\":\"" << info.timestamp << "\","
+    // --- MODIFICATION START: Final JSON object generation ---
+    // info.timestamp는 이제 순수한 시간 문자열입니다.
+    // 여기서 완전한 JSON 객체를 생성합니다.
+    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                    << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                    << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                    << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
                    << "\"tid\":" << trans_id << ",\"d\":" << details_json << "}\n";
+    // --- MODIFICATION END ---
 }
 

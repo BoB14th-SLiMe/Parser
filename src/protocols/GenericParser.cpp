@@ -43,7 +43,7 @@ void GenericParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"len\":" << info.payload_size << "}";
 
-    *m_output_stream << info.timestamp // "{\"ts\":\"...\"" 또는 "{\"td\":...}"
+    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                    << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                    << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                    << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
