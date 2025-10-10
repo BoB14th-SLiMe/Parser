@@ -9,8 +9,9 @@
 #include <ctime>
 #include <memory>
 #include <cstring>
+#include <time.h>
 
-// 모든 프로토콜 파서 헤더 포함
+// All protocol parser headers
 #include "./protocols/ModbusParser.h"
 #include "./protocols/S7CommParser.h"
 #include "./protocols/XgtFenParser.h"
@@ -21,17 +22,41 @@
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
 
+// Helper function to format timestamp to ISO 8601
+static std::string format_timestamp(const struct timeval& ts) {
+    char buf[sizeof "2011-10-08T07:07:09.123456Z"];
+    char buft[sizeof "2011-10-08T07:07:09Z"];
+    struct tm t;
+    gmtime_r(&ts.tv_sec, &t);
+    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%SZ", &t);
+    // --- MODIFICATION: Cast ts.tv_usec to long to fix format warning ---
+    snprintf(buf, sizeof buf, "%.*s.%06ldZ", (int)sizeof(buft) - 2, buft, (long)ts.tv_usec);
+    return buf;
+}
+
+// Helper function for CSV escaping
+static std::string escape_csv(const std::string& s) {
+    std::string result = "\"";
+    for (char c : s) {
+        if (c == '"') {
+            result += "\"\"";
+        } else {
+            result += c;
+        }
+    }
+    result += "\"";
+    return result;
+}
+
 PacketParser::PacketParser(const std::string& output_dir)
     : m_output_dir(output_dir) {
     mkdir(m_output_dir.c_str(), 0755);
 
-    // 독립 파서들을 초기화합니다.
     m_arp_parser = std::unique_ptr<ArpParser>(new ArpParser());
     m_tcp_session_parser = std::unique_ptr<TcpSessionParser>(new TcpSessionParser());
-    initialize_output_stream("arp");
-    initialize_output_stream("tcp_session");
+    initialize_output_stream("arp", "@timestamp,d");
+    initialize_output_stream("tcp_session", "@timestamp,sip,sp,dip,dp,d");
     
-    // IP 페이로드 기반 프로토콜 파서들을 벡터에 등록합니다.
     m_protocol_parsers.push_back(std::unique_ptr<ModbusParser>(new ModbusParser()));
     m_protocol_parsers.push_back(std::unique_ptr<S7CommParser>(new S7CommParser()));
     m_protocol_parsers.push_back(std::unique_ptr<XgtFenParser>(new XgtFenParser()));
@@ -43,29 +68,44 @@ PacketParser::PacketParser(const std::string& output_dir)
     m_protocol_parsers.push_back(std::unique_ptr<GenericParser>(new GenericParser("opc_ua")));
     m_protocol_parsers.push_back(std::unique_ptr<GenericParser>(new GenericParser("bacnet")));
     m_protocol_parsers.push_back(std::unique_ptr<GenericParser>(new GenericParser("dhcp")));
-    m_protocol_parsers.push_back(std::unique_ptr<UnknownParser>(new UnknownParser())); // 항상 마지막에 위치
+    m_protocol_parsers.push_back(std::unique_ptr<UnknownParser>(new UnknownParser()));
 
+    const std::string ip_csv_header = "@timestamp,sip,sp,dip,dp,sq,ak,fl,d";
     for (const auto& parser : m_protocol_parsers) {
-        initialize_output_stream(parser->getName());
-        parser->setOutputStream(&m_output_streams[parser->getName()]);
+        initialize_output_stream(parser->getName(), ip_csv_header);
+        parser->setOutputStream(&m_json_streams[parser->getName()], &m_csv_streams[parser->getName()]);
     }
 }
 
 PacketParser::~PacketParser() {
-    for (auto& pair : m_output_streams) {
+    for (auto& pair : m_json_streams) {
+        if (pair.second.is_open()) pair.second.close();
+    }
+    for (auto& pair : m_csv_streams) {
         if (pair.second.is_open()) pair.second.close();
     }
 }
 
-void PacketParser::initialize_output_stream(const std::string& protocol) {
-    if (m_output_streams.find(protocol) == m_output_streams.end()) {
-        std::string filename = m_output_dir + protocol + ".jsonl";
-        m_output_streams[protocol].open(filename);
-        if (!m_output_streams[protocol].is_open()) {
-            std::cerr << "Error: Could not open output file " << filename << std::endl;
+void PacketParser::initialize_output_stream(const std::string& protocol, const std::string& csv_header) {
+    if (m_json_streams.find(protocol) == m_json_streams.end()) {
+        std::string json_filename = m_output_dir + protocol + ".jsonl";
+        m_json_streams[protocol].open(json_filename);
+        if (!m_json_streams[protocol].is_open()) {
+            std::cerr << "Error: Could not open output file " << json_filename << std::endl;
+        }
+    }
+    if (m_csv_streams.find(protocol) == m_csv_streams.end()) {
+        std::string csv_filename = m_output_dir + protocol + ".csv";
+        m_csv_streams[protocol].open(csv_filename);
+        if (!m_csv_streams[protocol].is_open()) {
+             std::cerr << "Error: Could not open output file " << csv_filename << std::endl;
+        }
+        if (m_csv_streams[protocol].is_open() && !csv_header.empty()) {
+            m_csv_streams[protocol] << csv_header << std::endl;
         }
     }
 }
+
 
 std::string PacketParser::get_canonical_flow_id(const std::string& ip1_str, uint16_t port1, const std::string& ip2_str, uint16_t port2) {
     std::string ip1 = ip1_str, ip2 = ip2_str;
@@ -95,15 +135,19 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
     uint16_t eth_type = ntohs(eth_header->eth_type);
     const u_char* l3_payload = packet + sizeof(EthernetHeader);
     int l3_payload_size = header->caplen - sizeof(EthernetHeader);
+    std::string timestamp_str = format_timestamp(header->ts);
 
     if (eth_type == 0x0806) { // ARP (Layer 2)
+        // --- MODIFICATION: Corrected ArpParser call to match its 2-argument signature ---
         std::string details_json = m_arp_parser->parse(l3_payload, l3_payload_size);
         
-        std::ofstream& out_stream = m_output_streams["arp"];
-        if (out_stream.is_open()) {
-            // @timestamp 필드를 사용하여 완전한 JSON 객체로 만듭니다.
-            out_stream << "{\"@timestamp\":\"" << timestamp_str << "\","
-                       << "\"d\":" << details_json << "}\n";
+        std::ofstream& json_out = m_json_streams["arp"];
+        if (json_out.is_open()) {
+            json_out << "{\"@timestamp\":\"" << timestamp_str << "\",\"d\":" << details_json << "}\n";
+        }
+        std::ofstream& csv_out = m_csv_streams["arp"];
+        if (csv_out.is_open()) {
+            csv_out << timestamp_str << "," << escape_csv(details_json) << "\n";
         }
     }
     else if (eth_type == 0x0800) { // IPv4 (Layer 3)
@@ -145,23 +189,27 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 
             std::string flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
             
-            // --- 페이로드 크기에 따른 로직 분기 ---
             if (payload_size <= 0 && ip_header->p == IPPROTO_TCP) {
-                // 페이로드가 없는 TCP 세션 유지 패킷 처리
-                std::ofstream& out_stream = m_output_streams["tcp_session"];
-                if (out_stream.is_open()) {
-                    std::string details_json = m_tcp_session_parser->parse(tcp_seq, tcp_ack, tcp_flags);
-                    // JSON 형식을 수정하여 완전한 객체로 만듭니다.
-                    out_stream << "{\"@timestamp\":\"" << timestamp_str << "\"," 
+                std::string details_json = m_tcp_session_parser->parse(tcp_seq, tcp_ack, tcp_flags);
+                
+                std::ofstream& json_out = m_json_streams["tcp_session"];
+                if (json_out.is_open()) {
+                    json_out << "{\"@timestamp\":\"" << timestamp_str << "\","
                                << "\"sip\":\"" << src_ip_str << "\",\"sp\":" << src_port << ","
                                << "\"dip\":\"" << dst_ip_str << "\",\"dp\":" << dst_port << ","
                                << "\"d\":" << details_json << "}\n";
                 }
-                return; // 처리 완료 후 함수 종료
+                std::ofstream& csv_out = m_csv_streams["tcp_session"];
+                if (csv_out.is_open()) {
+                    csv_out << timestamp_str << ","
+                            << src_ip_str << "," << src_port << ","
+                            << dst_ip_str << "," << dst_port << ","
+                            << escape_csv(details_json) << "\n";
+                }
+                return;
             }
 
             bool matched = false;
-            // PacketInfo 구조체에 포맷된 타임스탬프 문자열을 전달합니다.
             PacketInfo info = {
                 timestamp_str, flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
                 payload, payload_size, tcp_seq, tcp_ack, tcp_flags

@@ -17,6 +17,7 @@ std::string ArpParser::mac_to_string(const uint8_t* mac) {
     return ss.str();
 }
 
+// --- MODIFICATION: Ensure implementation matches 2-argument signature ---
 std::string ArpParser::parse(const u_char* arp_payload, int size) {
     if (size < sizeof(ARPHeader)) {
         return "{\"err\":\"invalid_size\"}";
@@ -38,3 +39,4 @@ std::string ArpParser::parse(const u_char* arp_payload, int size) {
 
     return ss.str();
 }
+
