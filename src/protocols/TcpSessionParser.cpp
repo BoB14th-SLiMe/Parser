@@ -9,7 +9,8 @@ std::string TcpSessionParser::getName() const {
 
 std::string TcpSessionParser::parse(uint32_t seq, uint32_t ack, uint8_t flags) const {
     std::stringstream ss;
-    // seq, ack, flags 정보를 'd' 객체에 기록합니다.
+    // Records seq, ack, and flags information in the 'd' object.
     ss << "{\"sq\":" << seq << ",\"ak\":" << ack << ",\"fl\":" << (int)flags << "}";
     return ss.str();
 }
+
