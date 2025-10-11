@@ -2,7 +2,16 @@
 #define NETWORK_HEADERS_H
 
 #include <cstdint>
-#include <arpa/inet.h>
+
+// 플랫폼에 따라 필요한 네트워크 헤더를 포함합니다.
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+    #include <netinet/in.h> // for in_addr
+#endif
+
 
 #pragma pack(push, 1)
 
