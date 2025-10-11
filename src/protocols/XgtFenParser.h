@@ -4,7 +4,8 @@
 #include "BaseProtocolParser.h"
 #include <chrono>
 #include <vector>
-#include <map> // <map> 헤더 추가
+#include <map>
+#include <string>
 
 // FEnet 요청에 대한 정보를 저장하는 구조체
 struct XgtFenRequestInfo {
@@ -16,7 +17,8 @@ struct XgtFenRequestInfo {
 
 class XgtFenParser : public BaseProtocolParser {
 public:
-    ~XgtFenParser() override = default;
+    // --- 수정: 소멸자를 여기서 선언합니다 ---
+    ~XgtFenParser() override;
 
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;

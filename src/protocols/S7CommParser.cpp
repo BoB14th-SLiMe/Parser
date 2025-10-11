@@ -35,11 +35,20 @@ std::string parse_s7_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7C
             const u_char* item_ptr = param + 2;
             for(int i = 0; i < item_count; ++i) {
                 if ((item_ptr + 12) > (param + param_len)) break;
+                
+                uint8_t area = item_ptr[8];
                 ss << (i > 0 ? "," : "") << "{";
-                ss << "\"ar\":" << (int)item_ptr[8];
-                if (item_ptr[8] == 0x84) ss << ",\"db\":" << safe_ntohs(item_ptr + 6);
+                // --- 수정: Syntax ID와 Transport Size 필드 추가 ---
+                ss << "\"syn\":" << (int)item_ptr[2];
+                ss << ",\"tsz\":" << (int)item_ptr[3];
+                ss << ",\"amt\":" << safe_ntohs(item_ptr + 4);
+                if (area == 0x84) { // Area: Data blocks (DB)
+                    ss << ",\"db\":" << safe_ntohs(item_ptr + 6);
+                }
+                ss << ",\"ar\":" << (int)area;
                 ss << ",\"addr\":" << (s7_addr_to_int(item_ptr + 9) >> 3);
-                ss << ",\"amt\":" << safe_ntohs(item_ptr + 4) << "}";
+                ss << "}";
+
                 item_ptr += 12;
             }
             ss << "]";
@@ -54,7 +63,7 @@ std::string parse_s7_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7C
             ss << "\"itms\":[";
             const u_char* data_item_ptr = data;
             for(size_t i = 0; i < req_info->items.size(); ++i) {
-                if ((data_item_ptr + 1) > (data + data_len)) break;
+                if ((data_item_ptr + 1) > (data + data_len)) break; 
                 ss << (i > 0 ? "," : "") << "{\"rc\":" << (int)data_item_ptr[0];
                 if (data_item_ptr[0] == 0xff) {
                     if ((data_item_ptr + 4) > (data + data_len)) {
@@ -124,13 +133,12 @@ void S7CommParser::parse(const PacketInfo& info) {
         pdu_json = parse_s7_pdu_optimized(s7_pdu, s7_pdu_len, nullptr);
         m_pending_requests[info.flow_id][pdu_ref] = new_req;
     } else {
-        return;
+        return; // Not a job or a mapped response
     }
     
     std::stringstream details_ss;
     details_ss << "{\"prid\":" << pdu_ref << ",\"pdu\":" << pdu_json << "}";
     
-    // Corrected function call
     writeOutput(info, details_ss.str());
 }
 
