@@ -12,6 +12,12 @@
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
 
+// --- 수정: JSONL과 CSV 파일 스트림을 함께 관리하기 위한 구조체 ---
+struct FileStreams {
+    std::ofstream jsonl_stream;
+    std::ofstream csv_stream;
+};
+
 class PacketParser {
 public:
     PacketParser(const std::string& output_dir = "output/");
@@ -20,9 +26,8 @@ public:
 
 private:
     std::string m_output_dir;
-    // .jsonl과 .csv 출력을 위한 별도의 파일 스트림
-    std::map<std::string, std::ofstream> m_json_streams;
-    std::map<std::string, std::ofstream> m_csv_streams;
+    // --- 수정: FileStreams 구조체를 사용하도록 맵 타입 변경 ---
+    std::map<std::string, FileStreams> m_output_streams;
     
     std::vector<std::unique_ptr<IProtocolParser>> m_protocol_parsers;
     std::unique_ptr<ArpParser> m_arp_parser;
@@ -31,8 +36,8 @@ private:
     std::map<std::string, struct timeval> m_flow_start_times;
 
     std::string get_canonical_flow_id(const std::string& ip1, uint16_t port1, const std::string& ip2, uint16_t port2);
-    // CSV 헤더를 쓰기 위한 함수 시그니처 수정
-    void initialize_output_stream(const std::string& protocol, const std::string& csv_header);
+    // --- 추가: 누락된 함수 선언 ---
+    void initialize_output_streams(const std::string& protocol);
 };
 
 #endif // PACKET_PARSER_H
