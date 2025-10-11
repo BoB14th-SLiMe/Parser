@@ -7,7 +7,10 @@
 #include <memory>
 #include <fstream>
 #include <map>
+// Windows에서는 pcap.h가 timeval을 정의하므로, sys/time.h는 비-Windows 환경에서만 포함합니다.
+#ifndef _WIN32
 #include <sys/time.h>
+#endif
 #include "./protocols/IProtocolParser.h"
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
@@ -41,4 +44,3 @@ private:
 };
 
 #endif // PACKET_PARSER_H
-
