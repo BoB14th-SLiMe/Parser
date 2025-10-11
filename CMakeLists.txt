@@ -20,6 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_executable(parser
     src/main.cpp
     src/PacketParser.cpp
+    src/protocols/BaseProtocolParser.cpp
     src/protocols/ModbusParser.cpp
     src/protocols/S7CommParser.cpp
     src/protocols/IProtocolParser.cpp

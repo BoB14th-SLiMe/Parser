@@ -4,8 +4,6 @@
 #include <iomanip>
 #include <cstring>
 
-S7CommParser::~S7CommParser() {}
-
 // --- Helper Functions ---
 static uint16_t safe_ntohs(const u_char* ptr) {
     uint16_t val_n;
@@ -17,7 +15,7 @@ static uint32_t s7_addr_to_int(const u_char* ptr) {
 }
 
 // Optimized PDU Parser
-std::string parse_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7CommRequestInfo* req_info) {
+std::string parse_s7_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7CommRequestInfo* req_info) {
     if (s7pdu_len < 10) return "{}";
     std::stringstream ss;
     ss << "{";
@@ -56,10 +54,10 @@ std::string parse_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7Comm
             ss << "\"itms\":[";
             const u_char* data_item_ptr = data;
             for(size_t i = 0; i < req_info->items.size(); ++i) {
-                if ((data_item_ptr + 1) > (data + data_len)) break; // Need at least 1 byte for return code
+                if ((data_item_ptr + 1) > (data + data_len)) break;
                 ss << (i > 0 ? "," : "") << "{\"rc\":" << (int)data_item_ptr[0];
                 if (data_item_ptr[0] == 0xff) {
-                    if ((data_item_ptr + 4) > (data + data_len)) { // Need 4 bytes for success case
+                    if ((data_item_ptr + 4) > (data + data_len)) {
                          ss << "}";
                          data_item_ptr++;
                          continue;
@@ -84,13 +82,12 @@ std::string parse_pdu_optimized(const u_char* s7pdu, int s7pdu_len, const S7Comm
 
 // --- IProtocolParser Interface Implementation ---
 std::string S7CommParser::getName() const { return "s7comm"; }
-void S7CommParser::setOutputStream(std::ofstream* stream) { m_output_stream = stream; }
+
 bool S7CommParser::isProtocol(const u_char* payload, int size) const {
     return size >= 17 && payload[0] == 0x03 && payload[5] == 0xf0 && payload[7] == 0x32;
 }
 
 void S7CommParser::parse(const PacketInfo& info) {
-    if (!m_output_stream || !m_output_stream->is_open()) return;
     const u_char* s7_pdu = info.payload + 7;
     int s7_pdu_len = info.payload_size - 7;
     if (s7_pdu_len < 10) return;
@@ -98,11 +95,11 @@ void S7CommParser::parse(const PacketInfo& info) {
     uint16_t pdu_ref = safe_ntohs(s7_pdu + 4);
     uint8_t rosctr = s7_pdu[1];
 
-    std::string details_json;
+    std::string pdu_json;
 
     if ((rosctr == 0x02 || rosctr == 0x03) && m_pending_requests[info.flow_id].count(pdu_ref)) {
         S7CommRequestInfo req_info = m_pending_requests[info.flow_id][pdu_ref];
-        details_json = parse_pdu_optimized(s7_pdu, s7_pdu_len, &req_info);
+        pdu_json = parse_s7_pdu_optimized(s7_pdu, s7_pdu_len, &req_info);
         m_pending_requests[info.flow_id].erase(pdu_ref);
     }
     else if (rosctr == 0x01) { // Job
@@ -118,22 +115,22 @@ void S7CommParser::parse(const PacketInfo& info) {
                 const u_char* item_ptr = param + 2;
                 for(int i=0; i < item_count; ++i) {
                      if ((item_ptr + 12) > (param + param_len)) break;
-                     S7CommItem item; // We only need to know the number of items for the response parsing.
+                     S7CommItem item;
                      new_req.items.push_back(item);
                      item_ptr += 12;
                 }
             }
         }
-        details_json = parse_pdu_optimized(s7_pdu, s7_pdu_len, nullptr);
+        pdu_json = parse_s7_pdu_optimized(s7_pdu, s7_pdu_len, nullptr);
         m_pending_requests[info.flow_id][pdu_ref] = new_req;
     } else {
-        return; // Not a job or a mapped response
+        return;
     }
     
-    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
-                   << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
-                   << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
-                   << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
-                   << "\"prid\":" << pdu_ref << ",\"d\":" << details_json << "}\n";
+    std::stringstream details_ss;
+    details_ss << "{\"prid\":" << pdu_ref << ",\"pdu\":" << pdu_json << "}";
+    
+    // Corrected function call
+    writeOutput(info, details_ss.str());
 }
 

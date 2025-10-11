@@ -1,18 +1,16 @@
 #ifndef DNP3_PARSER_H
 #define DNP3_PARSER_H
 
-#include "IProtocolParser.h"
+#include "BaseProtocolParser.h" // BaseProtocolParser를 포함
 
-class Dnp3Parser : public IProtocolParser {
+// BaseProtocolParser를 상속받도록 수정
+class Dnp3Parser : public BaseProtocolParser {
 public:
-    ~Dnp3Parser() override;
+    ~Dnp3Parser() override = default;
+    
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
-    void setOutputStream(std::ofstream* stream) override;
-
-private:
-    std::ofstream* m_output_stream = nullptr;
 };
 
 #endif // DNP3_PARSER_H
