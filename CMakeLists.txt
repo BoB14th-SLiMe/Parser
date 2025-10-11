@@ -41,13 +41,14 @@ if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
     message(FATAL_ERROR "Could not find pcap library. Please install libpcap-dev or equivalent.")
 endif()
 
-# --- 헤더 파일 검색 경로 추가 ---
-# 1. 우리 프로젝트의 'include' 폴더를 검색 경로에 추가합니다.
+# --- 헤더 파일 검색 경로 추가 (수정됨) ---
+# 1. 우리 프로젝트의 'src' 폴더를 검색 경로에 추가합니다.
 # 2. pcap 라이브러리의 헤더 폴더를 검색 경로에 추가합니다.
 target_include_directories(parser PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${PCAP_INCLUDE_DIR}
 )
 
 # 생성된 실행 파일에 pcap 라이브러리를 연결(링크)합니다.
 target_link_libraries(parser PRIVATE ${PCAP_LIBRARY})
+
