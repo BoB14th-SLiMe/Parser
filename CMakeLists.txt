@@ -4,14 +4,6 @@ cmake_minimum_required(VERSION 3.10)
 # 프로젝트 이름 설정
 project(PacketParser C CXX)
 
-# --- macOS 환경에서 컴파일러를 명시적으로 지정 ---
-# CMake가 링커(ld)를 직접 호출하는 문제를 방지하고,
-# clang++ 드라이버를 통해 링크하도록 강제합니다.
-if(APPLE)
-    set(CMAKE_C_COMPILER "clang")
-    set(CMAKE_CXX_COMPILER "clang++")
-endif()
-
 # C++ 표준 설정
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -33,22 +25,36 @@ add_executable(parser
     src/protocols/TcpSessionParser.cpp
 )
 
-# --- pcap 라이브러리 수동으로 찾기 ---
-find_path(PCAP_INCLUDE_DIR pcap.h HINTS /opt/homebrew/include)
-find_library(PCAP_LIBRARY NAMES pcap HINTS /opt/homebrew/lib)
-
-if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
-    message(FATAL_ERROR "Could not find pcap library. Please install libpcap-dev or equivalent.")
+# --- 플랫폼에 따라 pcap 라이브러리 찾기 ---
+if(WIN32)
+    # Windows (Npcap/WinPcap SDK)
+    # Npcap SDK 설치 경로를 자동으로 찾거나, 환경 변수(NPCAP_SDK_PATH)를 통해 찾습니다.
+    find_path(PCAP_INCLUDE_DIR pcap.h
+        HINTS
+            "$ENV{NPCAP_SDK_PATH}/Include"
+            "C:/Program Files/Npcap-SDK/Include"
+    )
+    find_library(PCAP_LIBRARY NAMES wpcap
+        HINTS
+            "$ENV{NPCAP_SDK_PATH}/Lib/x64"
+            "C:/Program Files/Npcap-SDK/Lib/x64"
+    )
+    # Windows 소켓 라이브러리 추가
+    target_link_libraries(parser PRIVATE ${PCAP_LIBRARY} ws2_32)
+else()
+    # macOS / Linux
+    find_path(PCAP_INCLUDE_DIR pcap.h)
+    find_library(PCAP_LIBRARY NAMES pcap)
+    target_link_libraries(parser PRIVATE ${PCAP_LIBRARY})
 endif()
 
-# --- 헤더 파일 검색 경로 추가 (수정됨) ---
-# 1. 우리 프로젝트의 'src' 폴더를 검색 경로에 추가합니다.
-# 2. pcap 라이브러리의 헤더 폴더를 검색 경로에 추가합니다.
+# pcap 라이브러리를 찾지 못하면 에러 발생
+if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
+    message(FATAL_ERROR "Could not find pcap library. Please install Npcap SDK (Windows) or libpcap-dev (Linux/macOS).")
+endif()
+
+# 헤더 파일 검색 경로 추가
 target_include_directories(parser PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${PCAP_INCLUDE_DIR}
 )
-
-# 생성된 실행 파일에 pcap 라이브러리를 연결(링크)합니다.
-target_link_libraries(parser PRIVATE ${PCAP_LIBRARY})
-
