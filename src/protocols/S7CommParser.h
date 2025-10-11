@@ -1,13 +1,14 @@
 #ifndef S7COMM_PARSER_H
 #define S7COMM_PARSER_H
 
-#include "IProtocolParser.h"
+#include "BaseProtocolParser.h"
 #include <chrono>
 #include <vector>
+#include <map> // <map> 헤더 추가
 
 // S7comm 아이템 구조체
 struct S7CommItem {
-    // This struct can be kept empty if only the count of items is needed for parsing responses.
+    // 응답 파싱 시 아이템 개수만 필요하므로 비워둘 수 있습니다.
 };
 
 // S7comm 요청 정보 구조체
@@ -18,19 +19,18 @@ struct S7CommRequestInfo {
     std::chrono::steady_clock::time_point timestamp;
 };
 
-class S7CommParser : public IProtocolParser {
+class S7CommParser : public BaseProtocolParser {
 public:
-    ~S7CommParser() override; // 소멸자 선언 추가
+    ~S7CommParser() override = default;
 
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
-    void setOutputStream(std::ofstream* stream) override;
 
 private:
     // S7comm 프로토콜에 대한 보류 중인 요청 맵
     std::map<std::string, std::map<uint16_t, S7CommRequestInfo>> m_pending_requests;
-    std::ofstream* m_output_stream = nullptr;
 };
 
 #endif // S7COMM_PARSER_H
+

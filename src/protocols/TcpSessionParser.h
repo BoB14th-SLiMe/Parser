@@ -10,11 +10,12 @@ public:
     TcpSessionParser();
     ~TcpSessionParser();
 
-    // TCP 세션 정보를 받아 간단한 JSON 문자열을 생성합니다.
+    // Generates a simple JSON string from TCP session information.
     std::string parse(uint32_t seq, uint32_t ack, uint8_t flags) const;
     
-    // 파서의 이름을 반환합니다.
+    // Returns the name of the parser.
     std::string getName() const;
 };
 
 #endif // TCP_SESSION_PARSER_H
+

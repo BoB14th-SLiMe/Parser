@@ -5,15 +5,13 @@
 #include <cstring>
 #include <string>
 
-XgtFenParser::~XgtFenParser() {} // 소멸자 정의 추가
-
 // --- Helper Functions ---
 static uint16_t safe_letohs(const u_char* ptr) {
     return (uint16_t)(ptr[0] | (ptr[1] << 8));
 }
 
 // Optimized PDU parser
-std::string parse_pdu_optimized(const u_char* pdu, int pdu_len, bool is_request) {
+std::string parse_xgt_pdu_optimized(const u_char* pdu, int pdu_len, bool is_request) {
     if (pdu_len < 2) return "{}";
     std::stringstream ss;
     ss << "{";
@@ -88,14 +86,12 @@ std::string parse_pdu_optimized(const u_char* pdu, int pdu_len, bool is_request)
 // --- IProtocolParser Interface Implementation ---
 
 std::string XgtFenParser::getName() const { return "xgt_fen"; }
-void XgtFenParser::setOutputStream(std::ofstream* stream) { m_output_stream = stream; }
 
 bool XgtFenParser::isProtocol(const u_char* payload, int size) const {
     return size >= 22 && memcmp(payload, "LSIS-XGT", 8) == 0;
 }
 
 void XgtFenParser::parse(const PacketInfo& info) {
-    if (!m_output_stream || !m_output_stream->is_open()) return;
     const u_char* header = info.payload;
     if (info.payload_size < 20) return;
 
@@ -105,14 +101,14 @@ void XgtFenParser::parse(const PacketInfo& info) {
     const u_char* pdu = header + 20;
     int pdu_len = info.payload_size - 20;
 
-    std::string details_json;
+    std::string pdu_json;
 
     if (frame_source == 0x11 && m_pending_requests[info.flow_id].count(invoke_id)) {
-        details_json = parse_pdu_optimized(pdu, pdu_len, false);
+        pdu_json = parse_xgt_pdu_optimized(pdu, pdu_len, false);
         m_pending_requests[info.flow_id].erase(invoke_id);
     }
     else if (frame_source == 0x33) {
-        details_json = parse_pdu_optimized(pdu, pdu_len, true);
+        pdu_json = parse_xgt_pdu_optimized(pdu, pdu_len, true);
         if (pdu_len >= 4) {
              XgtFenRequestInfo new_req;
              new_req.invoke_id = invoke_id;
@@ -121,13 +117,13 @@ void XgtFenParser::parse(const PacketInfo& info) {
              m_pending_requests[info.flow_id][invoke_id] = new_req;
         }
     } else {
-        return; // Unknown source or unmapped response
+        return;
     }
     
-    *m_output_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
-                   << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
-                   << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
-                   << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
-                   << "\"ivid\":" << invoke_id << ",\"d\":" << details_json << "}\n";
+    std::stringstream details_ss;
+    details_ss << "{\"ivid\":" << invoke_id << ",\"pdu\":" << pdu_json << "}";
+    
+    // Corrected function call
+    writeOutput(info, details_ss.str());
 }
 
