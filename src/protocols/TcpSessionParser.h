@@ -4,16 +4,16 @@
 #include <string>
 #include <sstream>
 #include <cstdint>
+#include <tuple>
 
 class TcpSessionParser {
 public:
     TcpSessionParser();
     ~TcpSessionParser();
 
-    // Generates a simple JSON string from TCP session information.
+    // --- 수정: 다시 간단한 JSON 문자열만 반환하도록 변경 ---
     std::string parse(uint32_t seq, uint32_t ack, uint8_t flags) const;
     
-    // Returns the name of the parser.
     std::string getName() const;
 };
 
