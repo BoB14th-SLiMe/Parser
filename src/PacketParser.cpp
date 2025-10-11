@@ -119,18 +119,6 @@ std::string PacketParser::get_canonical_flow_id(const std::string& ip1_str, uint
 void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet) {
     if (!packet || header->caplen < sizeof(EthernetHeader)) return;
 
-    // --- Timestamp Formatting ---
-    // ElasticSearch 형식(@timestamp)에 맞는 타임스탬프 문자열을 미리 생성합니다.
-    std::stringstream time_ss;
-    struct tm *ltime;
-    char timestr[40];
-    ltime = localtime(&header->ts.tv_sec);
-    // ISO 8601 형식과 유사하게 변경 (e.g., "YYYY-MM-DDTHH:MM:SS.microsZ")
-    strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", ltime);
-    time_ss << timestr << "." << std::setw(6) << std::setfill('0') << header->ts.tv_usec << "Z";
-    std::string timestamp_str = time_ss.str();
-
-
     const EthernetHeader* eth_header = (const EthernetHeader*)(packet);
     uint16_t eth_type = ntohs(eth_header->eth_type);
     const u_char* l3_payload = packet + sizeof(EthernetHeader);
@@ -229,3 +217,4 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
         }
     }
 }
+
