@@ -1,16 +1,22 @@
 #include "PacketParser.h"
 #include "./network/network_headers.h"
 #include <iostream>
-#include <netinet/in.h>
 #include <iomanip>
 #include <sstream>
-#include <sys/stat.h>
 #include <algorithm>
 #include <ctime>
 #include <memory>
 #include <cstring>
 #include <vector>
 #include <tuple>
+
+// 플랫폼에 따라 디렉토리 생성 및 시간 관련 헤더를 포함합니다.
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
+
 
 // All protocol parser headers
 #include "./protocols/ModbusParser.h"
@@ -23,18 +29,35 @@
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
 
-// --- Helper Function: Format timestamp to ISO 8601 string ---
+// --- Helper Function: Format timestamp to ISO 8601 string (Cross-platform) ---
 static std::string format_timestamp(const struct timeval& ts) {
     char buf[sizeof "2011-10-08T07:07:09.000000Z"];
     char buft[sizeof "2011-10-08T07:07:09"];
-    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%S", gmtime(&ts.tv_sec));
+    time_t sec = ts.tv_sec;
+    struct tm gmt;
+
+    // 플랫폼에 맞는 스레드 안전한 시간 변환 함수 사용
+    #ifdef _WIN32
+        gmtime_s(&gmt, &sec);
+    #else
+        gmtime_r(&sec, &gmt);
+    #endif
+
+    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%S", &gmt);
+    // Windows에서는 ts.tv_usec가 long 타입일 수 있으므로 int로 캐스팅
     snprintf(buf, sizeof buf, "%.*s.%06dZ", (int)sizeof(buft) - 1, buft, (int)ts.tv_usec);
     return std::string(buf);
 }
 
 PacketParser::PacketParser(const std::string& output_dir)
     : m_output_dir(output_dir) {
-    mkdir(m_output_dir.c_str(), 0755);
+    // 플랫폼에 맞는 디렉토리 생성 함수 사용
+    #ifdef _WIN32
+        _mkdir(m_output_dir.c_str());
+    #else
+        mkdir(m_output_dir.c_str(), 0755);
+    #endif
+
 
     m_arp_parser = std::unique_ptr<ArpParser>(new ArpParser());
     m_tcp_session_parser = std::unique_ptr<TcpSessionParser>(new TcpSessionParser());
@@ -139,8 +162,8 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
         
         const int ip_header_length = ip_header->hl * 4;
         char src_ip_str[INET_ADDRSTRLEN], dst_ip_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(ip_header->ip_src), src_ip_str, INET_ADDRSTRLEN);
-        inet_ntop(AF_INET, &(ip_header->ip_dst), dst_ip_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, (void*)&(ip_header->ip_src), src_ip_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, (void*)&(ip_header->ip_dst), dst_ip_str, INET_ADDRSTRLEN);
 
         if (ip_header->p == IPPROTO_TCP || ip_header->p == IPPROTO_UDP) {
             const u_char* payload;
@@ -221,4 +244,3 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
         }
     }
 }
-
