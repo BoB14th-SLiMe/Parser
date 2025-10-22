@@ -7,9 +7,12 @@ macOS / Linux
 
 libpcap-dev (또는 이에 상응하는 패키지)와 cmake가 설치되어 있어야 합니다.
 
+```
 rm -rf build 
 cmake -B build
 cmake --build build
+```
+
 
 Windows (x86/x64)
 
@@ -22,16 +25,19 @@ C++ 컴파일러를 설치합니다. (예: Visual Studio Community에서 "C++를
 컴파일러와 CMake의 경로가 설정된 터미널(예: "x64 Native Tools Command Prompt for VS")을 엽니다.
 
 아래 명령어를 실행합니다:
-
+```
 rm -rf build
 cmake -B build
 cmake --build build
+```
 
 사용법
 
 # macOS / Linux
+```
 ./build/parser test_data/sample.pcap
 
 # Windows (빌드 결과물은 build/Debug/ 폴더에 생성됩니다)
-./build/Debug/parser.exe test_data/sample.pcap
 
+./build/Debug/parser.exe test_data/sample.pcap
+```
