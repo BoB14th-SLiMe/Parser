@@ -107,7 +107,8 @@ void PacketParser::initialize_output_streams(const std::string& protocol) {
         } else {
             streams.csv_stream.seekp(0, std::ios::end);
             if (streams.csv_stream.tellp() == 0) {
-                 streams.csv_stream << "@timestamp,sip,sp,dip,dp,sq,ak,fl,d\n";
+                 // --- 수정: CSV 헤더에 dir 칼럼 추가 ---
+                 streams.csv_stream << "@timestamp,sip,sp,dip,dp,sq,ak,fl,dir,d\n";
             }
         }
         m_output_streams[protocol] = std::move(streams);
@@ -142,17 +143,21 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
     int l3_payload_size = header->caplen - sizeof(EthernetHeader);
 
     if (eth_type == 0x0806) { // ARP (Layer 2)
+        // --- 수정: tuple 반환값 처리 ---
         auto arp_data = m_arp_parser->parse(header, l3_payload, l3_payload_size);
-        const std::string& timestamp_str = arp_data.first;
-        const std::string& details_json = arp_data.second;
+        const std::string& timestamp_str = std::get<0>(arp_data);
+        const std::string& details_json = std::get<1>(arp_data);
+        int op_code = std::get<2>(arp_data);
 
         if (!timestamp_str.empty()) {
+            std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
             if (m_output_streams["arp"].jsonl_stream.is_open()) {
-                m_output_streams["arp"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\",\"d\":" << details_json << "}\n";
+                // --- 수정: dir 추가 ---
+                m_output_streams["arp"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\",\"dir\":\"" << direction << "\",\"d\":" << details_json << "}\n";
             }
             if (m_output_streams["arp"].csv_stream.is_open()) {
-                // --- 수정: ARP에 대해 빈 컬럼을 포함하여 CSV 형식 통일 ---
-                m_output_streams["arp"].csv_stream << timestamp_str << ",,,,,,,,\"" << escape_csv(details_json) << "\"\n";
+                // --- 수정: ARP에 대해 dir 칼럼을 포함하여 CSV 형식 통일 ---
+                m_output_streams["arp"].csv_stream << timestamp_str << ",,,,,,,," << direction << ",\"" << escape_csv(details_json) << "\"\n";
             }
         }
     }
@@ -197,18 +202,22 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 
             if (payload_size <= 0 && ip_header->p == IPPROTO_TCP) {
                 std::string details_json = m_tcp_session_parser->parse(tcp_seq, tcp_ack, tcp_flags);
+                std::string direction = "session"; // TCP 세션 패킷(페이로드 없음)
 
                 if (m_output_streams["tcp_session"].jsonl_stream.is_open()) {
+                     // --- 수정: dir 추가 ---
                      m_output_streams["tcp_session"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\","
                         << "\"sip\":\"" << src_ip_str << "\",\"sp\":" << src_port << ","
                         << "\"dip\":\"" << dst_ip_str << "\",\"dp\":" << dst_port << ","
                         << "\"sq\":" << tcp_seq << ",\"ak\":" << tcp_ack << ",\"fl\":" << (int)tcp_flags << ","
+                        << "\"dir\":\"" << direction << "\","
                         << "\"d\":" << details_json << "}\n";
                 }
                 if (m_output_streams["tcp_session"].csv_stream.is_open()) {
+                    // --- 수정: dir 추가 ---
                     m_output_streams["tcp_session"].csv_stream 
                         << timestamp_str << "," << src_ip_str << "," << src_port << "," << dst_ip_str << "," << dst_port << ","
-                        << tcp_seq << "," << tcp_ack << "," << (int)tcp_flags << ",\"" 
+                        << tcp_seq << "," << tcp_ack << "," << (int)tcp_flags << "," << direction << ",\"" 
                         << escape_csv(details_json) << "\"\n";
                 }
                 return;

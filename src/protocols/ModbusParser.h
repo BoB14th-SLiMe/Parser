@@ -12,7 +12,8 @@ struct ModbusRequestInfo {
 
 class ModbusParser : public BaseProtocolParser {
 public:
-    ~ModbusParser() override = default;
+    // --- 수정: 소멸자 선언 (정의는 .cpp 파일로 이동) ---
+    ~ModbusParser() override;
 
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
@@ -24,4 +25,3 @@ private:
 };
 
 #endif // MODBUS_PARSER_H
-

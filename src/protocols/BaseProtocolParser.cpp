@@ -1,6 +1,9 @@
 #include "BaseProtocolParser.h"
 #include <sstream>
 
+// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
+BaseProtocolParser::~BaseProtocolParser() {}
+
 // 추가: CSV 이스케이프 처리 구현
 std::string BaseProtocolParser::escape_csv(const std::string& s) {
     std::string result = "\"";
@@ -20,13 +23,15 @@ void BaseProtocolParser::setOutputStream(std::ofstream* json_stream, std::ofstre
     m_csv_stream = csv_stream;
 }
 
-void BaseProtocolParser::writeOutput(const PacketInfo& info, const std::string& details_json) {
+// --- 수정: direction 파라미터를 받아 JSONL과 CSV에 추가 ---
+void BaseProtocolParser::writeOutput(const PacketInfo& info, const std::string& details_json, const std::string& direction) {
     // 스트림이 유효하면 JSONL 파일에 기록
     if (m_json_stream && m_json_stream->is_open()) {
         *m_json_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
                        << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
                        << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
                        << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
+                       << "\"dir\":\"" << direction << "\","
                        << "\"d\":" << details_json << "}\n";
     }
 
@@ -36,7 +41,7 @@ void BaseProtocolParser::writeOutput(const PacketInfo& info, const std::string& 
                       << info.src_ip << "," << info.src_port << ","
                       << info.dst_ip << "," << info.dst_port << ","
                       << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                      << direction << ","
                       << escape_csv(details_json) << "\n";
     }
 }
-

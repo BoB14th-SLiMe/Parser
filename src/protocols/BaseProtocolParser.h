@@ -5,13 +5,15 @@
 
 class BaseProtocolParser : public IProtocolParser {
 public:
-    ~BaseProtocolParser() override = default;
+    // --- 수정: 소멸자 선언 (정의는 .cpp 파일로 이동) ---
+    ~BaseProtocolParser() override;
+    
     // 수정: json과 csv 출력을 위한 스트림 설정
     void setOutputStream(std::ofstream* json_stream, std::ofstream* csv_stream) override;
 
 protected:
-    // 수정: 두 가지 형식 모두에 기록
-    void writeOutput(const PacketInfo& info, const std::string& details_json);
+    // --- 수정: direction 파라미터 추가 ---
+    void writeOutput(const PacketInfo& info, const std::string& details_json, const std::string& direction);
 
     std::ofstream* m_json_stream = nullptr;
     std::ofstream* m_csv_stream = nullptr;

@@ -1,6 +1,10 @@
 #include "UnknownParser.h"
 #include <sstream>
 
+
+// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
+UnknownParser::~UnknownParser() {}
+
 std::string UnknownParser::getName() const {
     return "unknown";
 }
@@ -14,7 +18,6 @@ void UnknownParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"len\":" << info.payload_size << "}";
 
-    // Corrected function call
-    writeOutput(info, details_ss.str());
+    // --- 수정: "unknown" direction 전달 ---
+    writeOutput(info, details_ss.str(), "unknown");
 }
-

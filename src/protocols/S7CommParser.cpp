@@ -4,6 +4,9 @@
 #include <iomanip>
 #include <cstring>
 
+// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
+S7CommParser::~S7CommParser() {}
+
 // --- Helper Functions ---
 static uint16_t safe_ntohs(const u_char* ptr) {
     uint16_t val_n;
@@ -105,13 +108,16 @@ void S7CommParser::parse(const PacketInfo& info) {
     uint8_t rosctr = s7_pdu[1];
 
     std::string pdu_json;
+    std::string direction; // --- direction 변수 추가 ---
 
     if ((rosctr == 0x02 || rosctr == 0x03) && m_pending_requests[info.flow_id].count(pdu_ref)) {
+        direction = "response"; // --- direction 설정 ---
         S7CommRequestInfo req_info = m_pending_requests[info.flow_id][pdu_ref];
         pdu_json = parse_s7_pdu_optimized(s7_pdu, s7_pdu_len, &req_info);
         m_pending_requests[info.flow_id].erase(pdu_ref);
     }
     else if (rosctr == 0x01) { // Job
+        direction = "request"; // --- direction 설정 ---
         S7CommRequestInfo new_req;
         new_req.timestamp = std::chrono::steady_clock::now();
         new_req.pdu_ref = pdu_ref;
@@ -139,6 +145,7 @@ void S7CommParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"prid\":" << pdu_ref << ",\"pdu\":" << pdu_json << "}";
     
-    writeOutput(info, details_ss.str());
+    // --- 수정: direction 인자 전달 ---
+    writeOutput(info, details_ss.str(), direction);
 }
 
