@@ -5,6 +5,7 @@
 #include <cstring>
 #include <ctime>
 #include <utility> // for std::pair
+#include <tuple>   // --- tuple 헤더 추가 ---
 
 // Helper Function to format timestamp to ISO 8601 (Cross-platform)
 static std::string format_timestamp_arp(const struct timeval& ts) {
@@ -38,10 +39,10 @@ std::string ArpParser::mac_to_string(const uint8_t* mac) {
     return ss.str();
 }
 
-// Returns a pair of <timestamp, details_json>
-std::pair<std::string, std::string> ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, int size) {
+// --- 수정: 반환 타입을 std::tuple로 변경 (timestamp, json_details, op_code) ---
+std::tuple<std::string, std::string, int> ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, int size) {
     if (size < sizeof(ARPHeader)) {
-        return {"", ""}; // Return empty pair on failure
+        return {"", "", 0}; // Return empty tuple on failure
     }
 
     const ARPHeader* arp_header = reinterpret_cast<const ARPHeader*>(arp_payload);
@@ -52,7 +53,9 @@ std::pair<std::string, std::string> ArpParser::parse(const struct pcap_pkthdr* h
     inet_ntop(AF_INET, (void*)arp_header->spa, spa_str, INET_ADDRSTRLEN);
     inet_ntop(AF_INET, (void*)arp_header->tpa, tpa_str, INET_ADDRSTRLEN);
 
-    details_ss << "{\"op\":" << ntohs(arp_header->oper)
+    uint16_t op_code = ntohs(arp_header->oper); // --- op_code 추출 ---
+
+    details_ss << "{\"op\":" << op_code
                << ",\"smac\":\"" << mac_to_string(arp_header->sha) << "\""
                << ",\"sip\":\"" << spa_str << "\""
                << ",\"tmac\":\"" << mac_to_string(arp_header->tha) << "\""
@@ -60,5 +63,6 @@ std::pair<std::string, std::string> ArpParser::parse(const struct pcap_pkthdr* h
 
     std::string timestamp_str = format_timestamp_arp(header->ts);
     
-    return {timestamp_str, details_ss.str()};
+    // --- op_code를 함께 반환 ---
+    return {timestamp_str, details_ss.str(), op_code};
 }

@@ -4,6 +4,9 @@
 #include <iomanip>
 #include <cstring>
 
+// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
+ModbusParser::~ModbusParser() {}
+
 // Helper function to safely convert network byte order to host byte order for uint16_t
 static uint16_t safe_ntohs(const u_char* ptr) {
     uint16_t val_n;
@@ -95,11 +98,15 @@ void ModbusParser::parse(const PacketInfo& info) {
     if (pdu_len < 1) return;
 
     std::string pdu_json;
+    std::string direction; // --- direction 변수 추가 ---
+
     if (m_pending_requests[info.flow_id].count(trans_id)) { // Response
+        direction = "response";
         ModbusRequestInfo req_info = m_pending_requests[info.flow_id][trans_id];
         pdu_json = parse_modbus_pdu_optimized(pdu, pdu_len, &req_info);
         m_pending_requests[info.flow_id].erase(trans_id);
     } else { // Request
+        direction = "request";
         ModbusRequestInfo new_req;
         new_req.function_code = pdu[0];
         if ((new_req.function_code >= 1 && new_req.function_code <= 6) || new_req.function_code == 15 || new_req.function_code == 16) {
@@ -112,7 +119,6 @@ void ModbusParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"tid\":" << trans_id << ",\"pdu\":" << pdu_json << "}";
     
-    // Corrected function call
-    writeOutput(info, details_ss.str());
+    // --- 수정: direction 인자 전달 ---
+    writeOutput(info, details_ss.str(), direction);
 }
-

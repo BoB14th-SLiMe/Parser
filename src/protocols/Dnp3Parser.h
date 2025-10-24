@@ -6,7 +6,8 @@
 // BaseProtocolParser를 상속받도록 수정
 class Dnp3Parser : public BaseProtocolParser {
 public:
-    ~Dnp3Parser() override = default;
+    // --- 수정: 소멸자 선언 (정의는 .cpp 파일로 이동) ---
+    ~Dnp3Parser() override;
     
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;

@@ -124,15 +124,18 @@ void XgtFenParser::parse(const PacketInfo& info) {
     int pdu_len = info.payload_size - 20;
 
     std::string pdu_json;
+    std::string direction; // --- direction 변수 추가 ---
     XgtFenRequestInfo req_info;
     bool is_response = (frame_source == 0x11);
     
     if (is_response && m_pending_requests[info.flow_id].count(invoke_id)) {
+        direction = "response";
         req_info = m_pending_requests[info.flow_id][invoke_id];
         pdu_json = parse_fenet_pdu(pdu, pdu_len, &req_info);
         m_pending_requests[info.flow_id].erase(invoke_id);
     }
     else if (frame_source == 0x33) { // Request
+        direction = "request";
         pdu_json = parse_fenet_pdu(pdu, pdu_len, nullptr);
         if (pdu_len >= 4) {
              XgtFenRequestInfo new_req;
@@ -148,6 +151,6 @@ void XgtFenParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"ivid\":" << invoke_id << ",\"pdu\":" << pdu_json << "}";
     
-    writeOutput(info, details_ss.str());
+    // --- 수정: direction 인자 전달 ---
+    writeOutput(info, details_ss.str(), direction);
 }
-

@@ -2,6 +2,9 @@
 #include <sstream>
 #include <cstring> // For memcmp
 
+// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
+GenericParser::~GenericParser() {}
+
 GenericParser::GenericParser(const std::string& name) : m_name(name) {}
 
 std::string GenericParser::getName() const {
@@ -35,7 +38,6 @@ void GenericParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << "{\"len\":" << info.payload_size << "}";
 
-    // Corrected function call
-    writeOutput(info, details_ss.str());
+    // --- 수정: "unknown" direction 전달 ---
+    writeOutput(info, details_ss.str(), "unknown");
 }
-
