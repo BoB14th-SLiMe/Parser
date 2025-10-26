@@ -2,7 +2,8 @@
 #define MODBUS_PARSER_H
 
 #include "BaseProtocolParser.h"
-#include <map> // <map> 헤더 추가
+#include "../AssetManager.h" // AssetManager 헤더 포함
+#include <map>
 
 // Modbus 요청 정보를 저장하는 구조체
 struct ModbusRequestInfo {
@@ -12,17 +13,17 @@ struct ModbusRequestInfo {
 
 class ModbusParser : public BaseProtocolParser {
 public:
+    explicit ModbusParser(AssetManager& assetManager);
     ~ModbusParser() override;
 
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
 
-    // --- 추가: CSV 헤더 오버라이드 ---
     void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
-    // Modbus 프로토콜에 대한 보류 중인 요청 맵
+    AssetManager& m_assetManager;
     std::map<std::string, std::map<uint16_t, ModbusRequestInfo>> m_pending_requests;
 };
 

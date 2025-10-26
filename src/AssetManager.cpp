@@ -82,9 +82,16 @@ void AssetManager::loadIpCsv(const std::string& filepath) {
 
 // 유선_Input / 유선_Output CSV 로드
 void AssetManager::loadTagCsv(const std::string& filepath) {
-    std::ifstream file(filepath);
+    std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Failed to open file.");
+    }
+
+    // Check for BOM
+    char bom[3];
+    file.read(bom, 3);
+    if (file.gcount() != 3 || bom[0] != (char)0xEF || bom[1] != (char)0xBB || bom[2] != (char)0xBF) {
+        file.seekg(0);
     }
 
     std::string line;
@@ -102,6 +109,9 @@ void AssetManager::loadTagCsv(const std::string& filepath) {
                 if (col < fields.size()) {
                     std::string tag = fields[col];
                     if (!tag.empty()) {
+                        // Trim leading/trailing whitespace from tag
+                        tag.erase(0, tag.find_first_not_of(" \t\n\r"));
+                        tag.erase(tag.find_last_not_of(" \t\n\r") + 1);
                         tagDescriptionMap[tag] = description;
                     }
                 }
@@ -156,5 +166,40 @@ std::string AssetManager::translateXgtAddress(const std::string& pduVarNm) const
         return "";
     }
     return "";
+}
+
+std::string AssetManager::translateModbusAddress(const std::string& fc_str, unsigned long addr) const {
+    if (fc_str.empty()) return "";
+    try {
+        int fc = std::stoi(fc_str);
+        long offset = 0;
+        switch (fc) {
+            case 0:
+                offset = 1;
+                break;
+            case 1:
+            case 2:
+                offset = 10001;
+                break;
+            case 3:
+                offset = 300001;
+                break;
+            case 4:
+                offset = 400001;
+                break;
+            default:
+                return std::to_string(addr); // No offset for other function codes
+        }
+        return std::to_string(offset + addr);
+    } catch (const std::exception& e) {
+        return "";
+    }
+}
+
+std::string AssetManager::translateS7Address(const std::string& area_str, const std::string& db_str, const std::string& addr_str) const {
+    if (area_str != "132") { // 0x84
+        return "";
+    }
+    return "DB" + db_str + "," + addr_str;
 }
 
