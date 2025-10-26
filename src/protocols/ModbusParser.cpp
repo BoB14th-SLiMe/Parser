@@ -3,12 +3,16 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
-#include <vector> // for std::vector
-#include <string> // for std::to_string
+#include <vector>
+#include <string>
+
+// 생성자
+ModbusParser::ModbusParser(AssetManager& assetManager)
+    : m_assetManager(assetManager) {}
 
 ModbusParser::~ModbusParser() {}
 
-// Helper function to safely convert network byte order to host byte order for uint16_t
+// Helper function (기존과 동일)
 static uint16_t safe_ntohs(const u_char* ptr) {
     uint16_t val_n;
     memcpy(&val_n, ptr, 2);
@@ -170,18 +174,32 @@ std::string parse_modbus_pdu_json(const u_char* pdu, int pdu_len, const ModbusRe
     return ss.str();
 }
 
+// --- Modbus 오프셋 계산 헬퍼 ---
+long getModbusOffset(const std::string& fc_str) {
+    if (fc_str.empty()) return 0;
+    try {
+        int fc = std::stoi(fc_str);
+        switch (fc) {
+            case 0: return 1;
+            case 1: return 10001;
+            case 3: return 30001;
+            case 4: return 40001;
+            default: return 0;
+        }
+    } catch (const std::exception& e) {
+        return 0;
+    }
+}
+
 // --- IProtocolParser Interface Implementation ---
 std::string ModbusParser::getName() const { return "modbus_tcp"; }
 
-// --- 추가: Modbus용 CSV 헤더 (정규화 + 확장) ---
+// --- 수정: Modbus용 CSV 헤더에 description 추가 ---
 void ModbusParser::writeCsvHeader(std::ofstream& csv_stream) {
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,";
-    // Normalized 'd' fields
-    csv_stream << "tid,pdu.fc,pdu.err,pdu.bc,pdu.addr,pdu.qty,pdu.val,";
-    // Exploded 'regs' fields
-    csv_stream << "pdu.regs.addr,pdu.regs.val\n";
+    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
+               << "tid,pdu.fc,pdu.err,pdu.bc,pdu.addr,pdu.qty,pdu.val,"
+               << "pdu.regs.addr,pdu.regs.val,translated_addr,description\n";
 }
-
 
 bool ModbusParser::isProtocol(const u_char* payload, int size) const {
     return size >= 7 && payload[2] == 0x00 && payload[3] == 0x00;
@@ -218,33 +236,52 @@ void ModbusParser::parse(const PacketInfo& info) {
     
     // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
     std::stringstream details_ss_json;
-    details_ss_json << "{\"tid\":" << trans_id << ",\"pdu\":" << pdu_json << "}";
+    details_ss_json << R"({"tid":)" << trans_id << R"(,"pdu":)" << pdu_json << R"(})";
     writeJsonl(info, direction, details_ss_json.str());
 
-    // --- 2. CSV 파일 쓰기 (정규화 + 확장) ---
+    // --- 2. CSV 파일 쓰기 ---
     if (m_csv_stream && m_csv_stream->is_open()) {
-        std::stringstream base_csv_line;
-        base_csv_line << info.timestamp << ","
-                      << info.src_mac << "," << info.dst_mac << ","
-                      << info.src_ip << "," << info.src_port << ","
-                      << info.dst_ip << "," << info.dst_port << ","
-                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
-                      << direction << ",";
-
-        std::stringstream details_csv_line;
-        details_csv_line << trans_id << ","
-                         << csv_data.fc << "," << csv_data.err << "," << csv_data.bc << ","
-                         << csv_data.addr << "," << csv_data.qty << "," << csv_data.val << ",";
-
-        if (csv_data.regs.empty()) {
-            // Write one line with empty item details
-            *m_csv_stream << base_csv_line.str() << details_csv_line.str() << ",,\n";
-        } else {
-            // Explode logic: write one line per register
+        // 여러 레지스터를 포함하는 응답의 경우 여러 줄로 나눔
+        if (!csv_data.regs.empty()) {
             for (const auto& reg : csv_data.regs) {
-                *m_csv_stream << base_csv_line.str() << details_csv_line.str()
-                              << reg.addr << "," << reg.val << "\n";
+                std::string translated_addr = m_assetManager.translateModbusAddress(csv_data.fc, std::stoul(reg.addr));
+                
+                // DEBUG: Print all tags and the lookup key
+                // m_assetManager.printAllTags();
+                // std::cout << "Looking up: " << translated_addr << std::endl;
+
+                std::string description = m_assetManager.getDescription(translated_addr);
+
+                *m_csv_stream << info.timestamp << ","
+                              << info.src_mac << "," << info.dst_mac << ","
+                              << info.src_ip << "," << info.src_port << ","
+                              << info.dst_ip << "," << info.dst_port << ","
+                              << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                              << direction << ","
+                              << trans_id << ","
+                              << csv_data.fc << "," << csv_data.err << "," << csv_data.bc << ","
+                              << "" << "," << "" << "," << "" << "," // pdu.addr, pdu.qty, pdu.val (N/A for multi-reg)
+                              << reg.addr << "," << reg.val << ","
+                              << escape_csv(translated_addr) << ","
+                              << escape_csv(description) << "\n";
             }
+        } else {
+            // 단일 값 또는 요청
+            std::string translated_addr = m_assetManager.translateModbusAddress(csv_data.fc, csv_data.addr.empty() ? 0 : std::stoul(csv_data.addr));
+            std::string description = m_assetManager.getDescription(translated_addr);
+
+            *m_csv_stream << info.timestamp << ","
+                          << info.src_mac << "," << info.dst_mac << ","
+                          << info.src_ip << "," << info.src_port << ","
+                          << info.dst_ip << "," << info.dst_port << ","
+                          << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                          << direction << ","
+                          << trans_id << ","
+                          << csv_data.fc << "," << csv_data.err << "," << csv_data.bc << ","
+                          << csv_data.addr << "," << csv_data.qty << "," << csv_data.val << ","
+                          << "" << "," << "" << "," // pdu.regs.* (N/A for single value)
+                          << escape_csv(translated_addr) << ","
+                          << escape_csv(description) << "\n";
         }
     }
 }
