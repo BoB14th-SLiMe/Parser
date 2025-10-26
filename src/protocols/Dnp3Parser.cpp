@@ -1,12 +1,18 @@
 #include "Dnp3Parser.h"
 #include <sstream>
+#include <string> // for std::to_string
 
-// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
 Dnp3Parser::~Dnp3Parser() {}
 
 std::string Dnp3Parser::getName() const {
     return "dnp3";
 }
+
+// --- 추가: DNP3용 CSV 헤더 ---
+void Dnp3Parser::writeCsvHeader(std::ofstream& csv_stream) {
+    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,len,ctrl,dest,src\n";
+}
+
 
 bool Dnp3Parser::isProtocol(const u_char* payload, int size) const {
     // DNP3 Link Layer Start Bytes: 0x05 0x64
@@ -14,9 +20,12 @@ bool Dnp3Parser::isProtocol(const u_char* payload, int size) const {
 }
 
 void Dnp3Parser::parse(const PacketInfo& info) {
-    std::stringstream details_ss;
-    // --- 수정: direction 변수 추가 ---
+    std::stringstream details_ss_json;
     std::string direction = "unknown";
+
+    // --- 파싱된 필드를 저장할 변수 ---
+    std::string len_str, ctrl_str, dest_str, src_str;
+    std::string payload_len_str = std::to_string(info.payload_size);
 
     if (info.payload_size >= 10) { // Minimum link layer header size
         uint8_t len = info.payload[2];
@@ -24,17 +33,38 @@ void Dnp3Parser::parse(const PacketInfo& info) {
         uint16_t dest = *(uint16_t*)(info.payload + 4);
         uint16_t src = *(uint16_t*)(info.payload + 6);
         
-        // --- 수정: DNP3 Link Layer DIR bit로 direction 판단 ---
-        // (ctrl & 0x80) -> DIR: 1 = Master to Outstation (request), 0 = Outstation to Master (response)
         direction = (ctrl & 0x80) ? "request" : "response";
 
-        details_ss << "{\"len\":" << (int)len << ",\"ctrl\":" << (int)ctrl 
+        // JSONL용 문자열 생성
+        details_ss_json << "{\"len\":" << (int)len << ",\"ctrl\":" << (int)ctrl 
                    << ",\"dest\":" << dest << ",\"src\":" << src << "}";
+        
+        // CSV용 변수 저장
+        len_str = std::to_string(len);
+        ctrl_str = std::to_string(ctrl);
+        dest_str = std::to_string(dest);
+        src_str = std::to_string(src);
+
     } else {
-        details_ss << "{\"len\":" << info.payload_size << "}";
+        details_ss_json << "{\"len\":" << info.payload_size << "}";
     }
     
-    // --- 수정: direction 인자 전달 ---
-    writeOutput(info, details_ss.str(), direction);
-}
+    // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
+    writeJsonl(info, direction, details_ss_json.str());
 
+    // --- 2. CSV 파일 쓰기 (정규화된(flattened) 컬럼) ---
+    if (m_csv_stream && m_csv_stream->is_open()) {
+        *m_csv_stream << info.timestamp << ","
+                      << info.src_mac << "," << info.dst_mac << ","
+                      << info.src_ip << "," << info.src_port << ","
+                      << info.dst_ip << "," << info.dst_port << ","
+                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                      << direction << ",";
+        
+        if (info.payload_size >= 10) {
+            *m_csv_stream << len_str << "," << ctrl_str << "," << dest_str << "," << src_str << "\n";
+        } else {
+            *m_csv_stream << payload_len_str << ",,,\n"; // len, ctrl, dest, src (len만 채움)
+        }
+    }
+}

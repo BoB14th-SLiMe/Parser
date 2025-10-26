@@ -1,11 +1,14 @@
-TCP Datagram Parser
-libpcap/npcap을 사용하는 간단한 TCP 데이터그램 파서입니다.
+# TCP Datagram Parser
 
-빌드 방법
+이 파서는 pcap 파일을 읽어, 각 프로토콜(Modbus, S7Comm, DNP3 등)을 식별하고,
+실시간으로 페이로드 데이터를 분석하여 정규화(flattened) 및 **확장(exploded)**된
+최종 csv 파일과 원본 jsonl 파일을 output/ 디렉토리에 생성합니다.
 
-macOS / Linux
+별도의 Python 후처리 스크립트가 필요 없습니다.
 
-libpcap-dev (또는 이에 상응하는 패키지)와 cmake가 설치되어 있어야 합니다.
+## 빌드 방법
+
+### macOS / Linux
 
 ```
 rm -rf build 
@@ -13,31 +16,38 @@ cmake -B build
 cmake --build build
 ```
 
+### Windows (x86/x64)
 
-Windows (x86/x64)
+1. CMake를 설치합니다.
 
-CMake를 설치합니다.
+2. Npcap SDK를 다운로드하여 설치합니다.
+    - 중요: 설치 과정에서 "SDK" 설치 옵션을 반드시 체크해야 합니다.
 
-Npcap SDK를 다운로드하여 설치합니다. 설치 과정에서 "SDK" 설치 옵션을 반드시 체크해야 합니다.
+3. C++ 컴파일러를 설치합니다.
+    - (예: Visual Studio Community에서 "C++를 사용한 데스크톱 개발" 워크로드 설치)
 
-C++ 컴파일러를 설치합니다. (예: Visual Studio Community에서 "C++를 사용한 데스크톱 개발" 워크로드 설치)
+4. 컴파일러와 CMake의 경로가 설정된 터미널(예: "x64 Native Tools Command Prompt for VS")을 엽니다.
 
-컴파일러와 CMake의 경로가 설정된 터미널(예: "x64 Native Tools Command Prompt for VS")을 엽니다.
+5. 아래 명령어를 실행합니다:
 
-아래 명령어를 실행합니다:
 ```
 rm -rf build
 cmake -B build
 cmake --build build
 ```
 
-사용법
+## 사용법
+빌드가 완료되면 build/ 디렉토리(또는 Windows의 경우 build/Debug/ 또는 build/Release/)에
+parser (또는 parser.exe) 실행 파일이 생성됩니다.
 
-# macOS / Linux
+파싱할 pcap 파일을 인자로 전달하여 실행합니다.
+
 ```
+# macOS / Linux
 ./build/parser test_data/sample.pcap
 
-# Windows (빌드 결과물은 build/Debug/ 폴더에 생성됩니다)
-
+# Windows
 ./build/Debug/parser.exe test_data/sample.pcap
 ```
+결과물은 output/ 디렉토리에 프로토콜별 .csv와 .jsonl 파일로 저장됩니다.
+(예: output/s7comm.csv, output/modbus_tcp.csv)

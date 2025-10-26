@@ -1,8 +1,8 @@
 #include "GenericParser.h"
 #include <sstream>
 #include <cstring> // For memcmp
+#include <string> // for std::to_string
 
-// --- 추가: vtable 링커 오류 해결을 위한 명시적 소멸자 정의 ---
 GenericParser::~GenericParser() {}
 
 GenericParser::GenericParser(const std::string& name) : m_name(name) {}
@@ -10,6 +10,14 @@ GenericParser::GenericParser(const std::string& name) : m_name(name) {}
 std::string GenericParser::getName() const {
     return m_name;
 }
+
+// --- 추가: Generic/Unknown 파서용 CSV 헤더 (len 컬럼만 추가) ---
+void GenericParser::writeCsvHeader(std::ofstream& csv_stream) {
+    // dhcp, ethernet_ip, iec104, mms, opc_ua, bacnet
+    // 모두 'len' 필드만 파싱하므로, 'len' 컬럼만 추가합니다.
+    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,len\n";
+}
+
 
 bool GenericParser::isProtocol(const u_char* payload, int size) const {
     if (m_name == "ethernet_ip") {
@@ -35,9 +43,21 @@ bool GenericParser::isProtocol(const u_char* payload, int size) const {
 }
 
 void GenericParser::parse(const PacketInfo& info) {
-    std::stringstream details_ss;
-    details_ss << "{\"len\":" << info.payload_size << "}";
+    std::stringstream details_ss_json;
+    details_ss_json << "{\"len\":" << info.payload_size << "}";
+    std::string direction = "unknown";
 
-    // --- 수정: "unknown" direction 전달 ---
-    writeOutput(info, details_ss.str(), "unknown");
+    // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
+    writeJsonl(info, direction, details_ss_json.str());
+
+    // --- 2. CSV 파일 쓰기 (정규화된(flattened) 컬럼) ---
+    if (m_csv_stream && m_csv_stream->is_open()) {
+        *m_csv_stream << info.timestamp << ","
+                      << info.src_mac << "," << info.dst_mac << ","
+                      << info.src_ip << "," << info.src_port << ","
+                      << info.dst_ip << "," << info.dst_port << ","
+                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                      << direction << ","
+                      << info.payload_size << "\n"; // 'len' 컬럼
+    }
 }

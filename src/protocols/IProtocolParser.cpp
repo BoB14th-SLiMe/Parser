@@ -1,5 +1,4 @@
 #include "IProtocolParser.h"
 
-// --- MODIFICATION: Provide the empty definition for the destructor here ---
+// vtable을 위한 소멸자 정의
 IProtocolParser::~IProtocolParser() {}
-

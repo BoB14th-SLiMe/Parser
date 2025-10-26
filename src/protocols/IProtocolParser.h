@@ -10,10 +10,8 @@
 struct PacketInfo {
     std::string timestamp;
     std::string flow_id;
-    // --- 추가: MAC 주소 ---
     std::string src_mac;
     std::string dst_mac;
-    // ---
     std::string src_ip;
     uint16_t src_port;
     std::string dst_ip;
@@ -27,14 +25,17 @@ struct PacketInfo {
 
 class IProtocolParser {
 public:
-    // --- MODIFICATION: Declare the virtual destructor without a definition or '= default' ---
     virtual ~IProtocolParser();
 
     virtual std::string getName() const = 0;
     virtual bool isProtocol(const u_char* payload, int size) const = 0;
     virtual void parse(const PacketInfo& info) = 0;
+    
+    // --- 수정: setOutputStream이 CSV 헤더 작성을 트리거 ---
     virtual void setOutputStream(std::ofstream* json_stream, std::ofstream* csv_stream) = 0;
+    
+    // --- 추가: 각 파서가 자신의 CSV 헤더를 작성하도록 함 ---
+    virtual void writeCsvHeader(std::ofstream& csv_stream) = 0;
 };
 
 #endif // IPROTOCOL_PARSER_H
-

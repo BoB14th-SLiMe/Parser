@@ -11,11 +11,10 @@ public:
     TcpSessionParser();
     ~TcpSessionParser();
 
-    // --- 수정: 다시 간단한 JSON 문자열만 반환하도록 변경 ---
+    // --- 수정: JSON 문자열만 반환 (비어있는 JSON "{}") ---
     std::string parse(uint32_t seq, uint32_t ack, uint8_t flags) const;
     
     std::string getName() const;
 };
 
 #endif // TCP_SESSION_PARSER_H
-
