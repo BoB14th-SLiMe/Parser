@@ -10,6 +10,10 @@
 struct PacketInfo {
     std::string timestamp;
     std::string flow_id;
+    // --- 추가: MAC 주소 ---
+    std::string src_mac;
+    std::string dst_mac;
+    // ---
     std::string src_ip;
     uint16_t src_port;
     std::string dst_ip;
