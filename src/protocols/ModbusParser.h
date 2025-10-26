@@ -12,12 +12,14 @@ struct ModbusRequestInfo {
 
 class ModbusParser : public BaseProtocolParser {
 public:
-    // --- 수정: 소멸자 선언 (정의는 .cpp 파일로 이동) ---
     ~ModbusParser() override;
 
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
+
+    // --- 추가: CSV 헤더 오버라이드 ---
+    void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
     // Modbus 프로토콜에 대한 보류 중인 요청 맵

@@ -5,13 +5,14 @@
 
 class DnsParser : public BaseProtocolParser {
 public:
-    // --- MODIFICATION: Declare the destructor here, define it in the .cpp file ---
     ~DnsParser() override;
     
     std::string getName() const override;
     bool isProtocol(const u_char* payload, int size) const override;
     void parse(const PacketInfo& info) override;
+
+    // --- 추가: CSV 헤더 오버라이드 ---
+    void writeCsvHeader(std::ofstream& csv_stream) override;
 };
 
 #endif // DNS_PARSER_H
-

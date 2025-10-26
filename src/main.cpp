@@ -45,12 +45,14 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    PacketParser parser; // PacketParser 객체 생성
+    // --- 수정: PacketParser가 "output" 디렉토리를 사용하도록 명시 ---
+    PacketParser parser("output"); // PacketParser 객체 생성 (출력 디렉토리 지정)
+    
     if (pcap_loop(handle, 0, packet_handler, reinterpret_cast<u_char*>(&parser)) < 0) {
         std::cerr << "pcap_loop() failed: " << pcap_geterr(handle) << std::endl;
     }
     
-    std::cout << "Deep Packet Inspection complete." << std::endl;
+    std::cout << "Packet parsing complete. Output files are in 'output/' directory." << std::endl;
     pcap_close(handle);
     return 0;
 }

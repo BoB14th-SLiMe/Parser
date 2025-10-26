@@ -40,13 +40,13 @@ std::string ArpParser::mac_to_string(const uint8_t* mac) {
 }
 
 // --- 수정: 반환 타입을 std::tuple로 변경 ---
-std::tuple<std::string, std::string, uint16_t> ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, int size) {
+std::tuple<std::string, uint16_t, std::string, std::string, std::string, std::string> 
+ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, int size) {
     if (size < sizeof(ARPHeader)) {
-        return {"", "", 0}; // Return empty tuple on failure
+        return {"", 0, "", "", "", ""}; // Return empty tuple on failure
     }
 
     const ARPHeader* arp_header = reinterpret_cast<const ARPHeader*>(arp_payload);
-    std::stringstream details_ss;
 
     char spa_str[INET_ADDRSTRLEN];
     char tpa_str[INET_ADDRSTRLEN];
@@ -54,15 +54,11 @@ std::tuple<std::string, std::string, uint16_t> ArpParser::parse(const struct pca
     inet_ntop(AF_INET, (void*)arp_header->tpa, tpa_str, INET_ADDRSTRLEN);
 
     uint16_t op_code = ntohs(arp_header->oper);
-
-    details_ss << "{\"op\":" << op_code
-               << ",\"smac\":\"" << mac_to_string(arp_header->sha) << "\""
-               << ",\"sip\":\"" << spa_str << "\""
-               << ",\"tmac\":\"" << mac_to_string(arp_header->tha) << "\""
-               << ",\"tip\":\"" << tpa_str << "\"}";
+    std::string sha_str = mac_to_string(arp_header->sha);
+    std::string tha_str = mac_to_string(arp_header->tha);
 
     std::string timestamp_str = format_timestamp_arp(header->ts);
     
-    // --- 수정: op_code를 튜플에 포함하여 반환 ---
-    return {timestamp_str, details_ss.str(), op_code};
+    // --- 수정: 파싱된 필드를 튜플로 반환 ---
+    return {timestamp_str, op_code, sha_str, spa_str, tha_str, tpa_str};
 }
