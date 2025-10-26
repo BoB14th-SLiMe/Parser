@@ -29,6 +29,16 @@
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
 
+// --- 추가: MAC 주소 문자열 변환 헬퍼 ---
+static std::string mac_to_string_helper(const uint8_t* mac) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 6; ++i) {
+        ss << std::setw(2) << static_cast<int>(mac[i]) << (i < 5 ? ":" : "");
+    }
+    return ss.str();
+}
+
 // --- Helper Function: Format timestamp to ISO 8601 string (Cross-platform) ---
 static std::string format_timestamp(const struct timeval& ts) {
     char buf[sizeof "2011-10-08T07:07:09.000000Z"];
@@ -107,8 +117,8 @@ void PacketParser::initialize_output_streams(const std::string& protocol) {
         } else {
             streams.csv_stream.seekp(0, std::ios::end);
             if (streams.csv_stream.tellp() == 0) {
-                 // --- 수정: CSV 헤더에 dir 칼럼 추가 ---
-                 streams.csv_stream << "@timestamp,sip,sp,dip,dp,sq,ak,fl,dir,d\n";
+                 // --- 수정: smac, dmac, dir 칼럼 추가 ---
+                 streams.csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,d\n";
             }
         }
         m_output_streams[protocol] = std::move(streams);
@@ -142,22 +152,27 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
     const u_char* l3_payload = packet + sizeof(EthernetHeader);
     int l3_payload_size = header->caplen - sizeof(EthernetHeader);
 
+    // --- 추가: MAC 주소 추출 ---
+    std::string src_mac_str = mac_to_string_helper(eth_header->src_mac);
+    std::string dst_mac_str = mac_to_string_helper(eth_header->dest_mac);
+
     if (eth_type == 0x0806) { // ARP (Layer 2)
-        // --- 수정: tuple 반환값 처리 ---
+        // --- 수정: 튜플로 반환값 받기 ---
         auto arp_data = m_arp_parser->parse(header, l3_payload, l3_payload_size);
         const std::string& timestamp_str = std::get<0>(arp_data);
         const std::string& details_json = std::get<1>(arp_data);
-        int op_code = std::get<2>(arp_data);
+        uint16_t op_code = std::get<2>(arp_data);
 
         if (!timestamp_str.empty()) {
+            // --- 수정: direction 판단 ---
             std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
             if (m_output_streams["arp"].jsonl_stream.is_open()) {
-                // --- 수정: dir 추가 ---
-                m_output_streams["arp"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\",\"dir\":\"" << direction << "\",\"d\":" << details_json << "}\n";
+                // --- 수정: smac, dmac, dir 추가 ---
+                m_output_streams["arp"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\",\"smac\":\"" << src_mac_str << "\",\"dmac\":\"" << dst_mac_str << "\",\"dir\":\"" << direction << "\",\"d\":" << details_json << "}\n";
             }
             if (m_output_streams["arp"].csv_stream.is_open()) {
-                // --- 수정: ARP에 대해 dir 칼럼을 포함하여 CSV 형식 통일 ---
-                m_output_streams["arp"].csv_stream << timestamp_str << ",,,,,,,," << direction << ",\"" << escape_csv(details_json) << "\"\n";
+                // --- 수정: ARP에 대해 smac, dmac, dir 칼럼을 포함하여 CSV 형식 통일 ---
+                m_output_streams["arp"].csv_stream << timestamp_str << "," << src_mac_str << "," << dst_mac_str << ",,,,,," << (int)0 << "," << (int)0 << "," << (int)0 << "," << direction << ",\"" << escape_csv(details_json) << "\"\n";
             }
         }
     }
@@ -202,11 +217,13 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 
             if (payload_size <= 0 && ip_header->p == IPPROTO_TCP) {
                 std::string details_json = m_tcp_session_parser->parse(tcp_seq, tcp_ack, tcp_flags);
-                std::string direction = "session"; // TCP 세션 패킷(페이로드 없음)
+                // --- 수정: TCP 세션 패킷(SYN, FIN 등)에 대한 direction ---
+                std::string direction = "session";
 
                 if (m_output_streams["tcp_session"].jsonl_stream.is_open()) {
-                     // --- 수정: dir 추가 ---
+                     // --- 수정: smac, dmac, dir 추가 ---
                      m_output_streams["tcp_session"].jsonl_stream << "{\"@timestamp\":\"" << timestamp_str << "\","
+                        << "\"smac\":\"" << src_mac_str << "\",\"dmac\":\"" << dst_mac_str << "\","
                         << "\"sip\":\"" << src_ip_str << "\",\"sp\":" << src_port << ","
                         << "\"dip\":\"" << dst_ip_str << "\",\"dp\":" << dst_port << ","
                         << "\"sq\":" << tcp_seq << ",\"ak\":" << tcp_ack << ",\"fl\":" << (int)tcp_flags << ","
@@ -214,9 +231,9 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
                         << "\"d\":" << details_json << "}\n";
                 }
                 if (m_output_streams["tcp_session"].csv_stream.is_open()) {
-                    // --- 수정: dir 추가 ---
+                    // --- 수정: smac, dmac, dir 추가 ---
                     m_output_streams["tcp_session"].csv_stream 
-                        << timestamp_str << "," << src_ip_str << "," << src_port << "," << dst_ip_str << "," << dst_port << ","
+                        << timestamp_str << "," << src_mac_str << "," << dst_mac_str << "," << src_ip_str << "," << src_port << "," << dst_ip_str << "," << dst_port << ","
                         << tcp_seq << "," << tcp_ack << "," << (int)tcp_flags << "," << direction << ",\"" 
                         << escape_csv(details_json) << "\"\n";
                 }
@@ -235,8 +252,9 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 
                 if (parser_name != "unknown" && parser->isProtocol(payload, payload_size)) {
                     std::string flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
+                    // --- 수정: PacketInfo에 smac, dmac 추가 ---
                     PacketInfo info = {
-                        timestamp_str, flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
+                        timestamp_str, flow_id, src_mac_str, dst_mac_str, src_ip_str, src_port, dst_ip_str, dst_port,
                         payload, payload_size, tcp_seq, tcp_ack, tcp_flags
                     };
                     parser->parse(info);
@@ -247,9 +265,11 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 
             if (!matched) {
                  std::string flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
-                 m_protocol_parsers.back()->parse({timestamp_str, flow_id, src_ip_str, src_port, dst_ip_str, dst_port,
+                 // --- 수정: PacketInfo에 smac, dmac 추가 ---
+                 m_protocol_parsers.back()->parse({timestamp_str, flow_id, src_mac_str, dst_mac_str, src_ip_str, src_port, dst_ip_str, dst_port,
                         payload, payload_size, tcp_seq, tcp_ack, tcp_flags});
             }
         }
     }
 }
+

@@ -5,7 +5,7 @@
 
 class BaseProtocolParser : public IProtocolParser {
 public:
-    // --- 수정: 소멸자 선언 (정의는 .cpp 파일로 이동) ---
+    // --- 수정: 소멸자 선언 (vtable 링커 오류 수정) ---
     ~BaseProtocolParser() override;
     
     // 수정: json과 csv 출력을 위한 스트림 설정

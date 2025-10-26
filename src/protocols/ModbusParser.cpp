@@ -98,7 +98,8 @@ void ModbusParser::parse(const PacketInfo& info) {
     if (pdu_len < 1) return;
 
     std::string pdu_json;
-    std::string direction; // --- direction 변수 추가 ---
+    // --- 수정: direction 변수 추가 ---
+    std::string direction;
 
     if (m_pending_requests[info.flow_id].count(trans_id)) { // Response
         direction = "response";
@@ -122,3 +123,4 @@ void ModbusParser::parse(const PacketInfo& info) {
     // --- 수정: direction 인자 전달 ---
     writeOutput(info, details_ss.str(), direction);
 }
+
