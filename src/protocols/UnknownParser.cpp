@@ -24,17 +24,17 @@ void UnknownParser::parse(const PacketInfo& info) {
     details_ss_json << "{\"len\":" << info.payload_size << "}";
     std::string direction = "unknown";
 
-    // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
     writeJsonl(info, direction, details_ss_json.str());
 
-    // --- 2. CSV 파일 쓰기 (정규화된(flattened) 컬럼) ---
     if (m_csv_stream && m_csv_stream->is_open()) {
         *m_csv_stream << info.timestamp << ","
                       << info.src_mac << "," << info.dst_mac << ","
                       << info.src_ip << "," << info.src_port << ","
                       << info.dst_ip << "," << info.dst_port << ","
-                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                      << info.tcp_seq << ","           // 추가!
+                      << info.tcp_ack << ","           // 추가!
+                      << (int)info.tcp_flags << ","    // 추가!
                       << direction << ","
-                      << info.payload_size << "\n"; // 'len' 컬럼
+                      << info.payload_size << "\n";
     }
 }

@@ -49,18 +49,17 @@ std::string XgtFenParser::getName() const {
 
 // 프로토콜 식별
 bool XgtFenParser::isProtocol(const PacketInfo& info) const {
-    // XGT FEN uses TCP port 2004
-    // Check minimum header size and Company ID "LSIS-XGT"
-    return info.protocol == IPPROTO_TCP &&
+    // XGT FEN uses TCP port 2004 (UDP도 지원)
+    return ((info.protocol == IPPROTO_TCP || info.protocol == IPPROTO_UDP) &&
            (info.dst_port == 2004 || info.src_port == 2004) &&
-           info.payload_size >= 20 && // Minimum Application Header size
-           memcmp(info.payload, "LSIS-XGT", 8) == 0;
+           info.payload_size >= 20 &&
+           memcmp(info.payload, "LSIS-XGT", 8) == 0);
 }
 
 // CSV 헤더 작성
 void XgtFenParser::writeCsvHeader(std::ofstream& csv_stream) {
     // Add more specific fields extracted from the protocol
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,prid,dir,"
+    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,prid,"
                << "hdr.companyId,hdr.plcinfo,hdr.cpuinfo,hdr.source,hdr.len,hdr.fenetpos,"
                << "inst.cmd,inst.dtype,inst.blkcnt,inst.errstat,inst.errinfo,"
                << "inst.vars,inst.datasize,inst.data," // Combined fields for simplicity in basic CSV
@@ -200,48 +199,38 @@ bool XgtFenParser::parseInstruction(const u_char* inst_payload, size_t inst_size
 void XgtFenParser::parse(const PacketInfo& info) {
     XgtFenHeader header;
     if (!parseHeader(info.payload, info.payload_size, header)) {
-        // Handle header parsing error - maybe log or write a generic error entry
-         std::cerr << "XGT FEN Header Parse Error. Timestamp: " << info.timestamp << std::endl;
+        std::cerr << "XGT FEN Header Parse Error. Timestamp: " << info.timestamp << std::endl;
         return;
     }
 
-    // Check if instruction length matches payload size
     if (20 + header.length != info.payload_size) {
         std::cerr << "XGT FEN Size Mismatch. Header len: " << header.length
                   << ", Actual inst size: " << (info.payload_size - 20)
                   << ". Timestamp: " << info.timestamp << std::endl;
-        // Proceed with caution or return, depending on desired strictness
-        // return;
     }
 
-    XgtFenInstruction instruction = {}; // Initialize instruction struct
+    XgtFenInstruction instruction = {};
     const u_char* instruction_payload = info.payload + 20;
-    // Use the minimum of the declared length and the actual available size
-    // <<< FIX HERE: Cast the result of the ternary operator to size_t >>>
     size_t instruction_size = std::min(static_cast<size_t>(header.length),
                                        static_cast<size_t>(info.payload_size > 20 ? info.payload_size - 20 : 0));
 
-
     bool parse_success = parseInstruction(instruction_payload, instruction_size, header, instruction);
 
-    // Prepare JSON output
+    // JSON 출력 (기존 코드 유지)
     nlohmann::json details_json;
     details_json["hdr"]["companyId"] = header.companyId;
-    // details_json["hdr"]["reserved1"] = header.reserved1; // Often 0, maybe omit
     details_json["hdr"]["plcInfo"] = header.plcInfo;
     details_json["hdr"]["cpuInfo"] = header.cpuInfo;
     details_json["hdr"]["source"] = header.sourceOfFrame;
     details_json["hdr"]["invokeId"] = header.invokeId;
     details_json["hdr"]["len"] = header.length;
     details_json["hdr"]["fenetPos"] = header.fenetPosition;
-    // details_json["hdr"]["reserved2"] = header.reserved2; // Often 0, maybe omit
 
     if (parse_success) {
         details_json["inst"]["cmd"] = instruction.command;
         details_json["inst"]["dtype"] = instruction.dataType;
-        details_json["inst"]["isCont"] = instruction.is_continuous; // Add continuous flag to JSON if needed
-        // details_json["inst"]["reserved"] = instruction.reserved; // Often 0
-        details_json["inst"]["blkCnt"] = instruction.blockCount; // Mostly relevant for requests
+        details_json["inst"]["isCont"] = instruction.is_continuous;
+        details_json["inst"]["blkCnt"] = instruction.blockCount;
 
         if (!instruction.variables.empty()) {
             details_json["inst"]["vars"] = nlohmann::json::array();
@@ -252,23 +241,18 @@ void XgtFenParser::parse(const PacketInfo& info) {
         if (!instruction.variableName.empty()) {
              details_json["inst"]["varNm"] = instruction.variableName;
         }
-        if (instruction.dataSize > 0) { // Relevant for cont. read req and responses
+        if (instruction.dataSize > 0) {
              details_json["inst"]["dataSize"] = instruction.dataSize;
         }
 
-        // Response specific fields
-        if (header.sourceOfFrame == 0x11) { // Only responses have error status
+        if (header.sourceOfFrame == 0x11) {
              details_json["inst"]["errStat"] = instruction.errorStatus;
-             if (instruction.errorStatus != 0) { // Error occurred
+             if (instruction.errorStatus != 0) {
                 details_json["inst"]["errInfo"] = instruction.errorInfoOrBlockCount;
-             } else if (!instruction.is_continuous) { // Normal Individual Read Response
-                // errorInfoOrBlockCount is blockCount for successful read response
+             } else if (!instruction.is_continuous) {
                 details_json["inst"]["respBlkCnt"] = instruction.errorInfoOrBlockCount;
              }
-             // For successful continuous read response, errorInfoOrBlockCount is 1 (block count)
-             // but we don't necessarily need to add it to json
         }
-
 
         if (!instruction.readData.empty()) {
              details_json["inst"]["readData"] = nlohmann::json::array();
@@ -277,7 +261,6 @@ void XgtFenParser::parse(const PacketInfo& info) {
              }
         }
         if (!instruction.continuousReadData.empty()) {
-             // Use "contRespData" for read response, "contWriteData" for write request
              std::string data_key = (header.sourceOfFrame == 0x11) ? "contRespData" : "contWriteData";
              details_json["inst"][data_key] = bytesToHexString(instruction.continuousReadData.data(), instruction.continuousReadData.size());
         }
@@ -289,48 +272,46 @@ void XgtFenParser::parse(const PacketInfo& info) {
         }
     } else {
         details_json["parse_error"] = "Instruction parsing failed";
-        // Include raw instruction hex for debugging
         details_json["raw_instruction_hex"] = bytesToHexString(instruction_payload, instruction_size);
     }
 
     std::string details_str = details_json.dump();
     std::string direction = (header.sourceOfFrame == 0x33) ? "request" : (header.sourceOfFrame == 0x11 ? "response" : "unknown");
 
-    // Attempt to find the primary variable name for translation
     std::string primary_var_name;
     if (!instruction.variableName.empty()) {
         primary_var_name = instruction.variableName;
     } else if (!instruction.variables.empty()) {
-        primary_var_name = instruction.variables[0].second; // Use the first variable name
+        primary_var_name = instruction.variables[0].second;
     }
 
     std::string translatedAddr = m_assetManager.translateXgtAddress(primary_var_name);
     std::string description = m_assetManager.getDescription(translatedAddr);
 
-
-    // JSONL 라인 작성
     writeJsonl(info, direction, details_str);
 
-    // CSV 라인 작성
+    // CSV 출력 - sq, ak, fl 추가
     if (m_csv_stream && m_csv_stream->is_open()) {
         *m_csv_stream << info.timestamp << ","
                       << info.src_mac << "," << info.dst_mac << ","
                       << info.src_ip << "," << info.src_port << ","
                       << info.dst_ip << "," << info.dst_port << ","
-                      << header.invokeId << "," // Use invokeId as prid
+                      << info.tcp_seq << ","           // 추가!
+                      << info.tcp_ack << ","           // 추가!
+                      << (int)info.tcp_flags << ","    // 추가!
                       << direction << ","
+                      << header.invokeId << ","        // prid
 
                       // Header fields
                       << escape_csv(header.companyId) << ","
                       << header.plcInfo << "," << (int)header.cpuInfo << "," << (int)header.sourceOfFrame << ","
                       << header.length << "," << (int)header.fenetPosition << ","
 
-                      // Instruction fields (simplified for single line CSV)
+                      // Instruction fields
                       << instruction.command << "," << instruction.dataType << ","
                       << instruction.blockCount << "," << instruction.errorStatus << ","
                       << instruction.errorInfoOrBlockCount << ",";
 
-                      // Combine variable names for CSV
                       std::string vars_csv;
                       if (!instruction.variableName.empty()) {
                           vars_csv = instruction.variableName;
@@ -343,7 +324,6 @@ void XgtFenParser::parse(const PacketInfo& info) {
                       *m_csv_stream << escape_csv(vars_csv) << ","
                       << instruction.dataSize << ",";
 
-                      // Combine data for CSV (show continuous or first item of individual)
                       std::string data_csv;
                       if (!instruction.continuousReadData.empty()) {
                           data_csv = bytesToHexString(instruction.continuousReadData.data(), instruction.continuousReadData.size());
@@ -354,11 +334,9 @@ void XgtFenParser::parse(const PacketInfo& info) {
                            data_csv = bytesToHexString(instruction.writeData[0].second.data(), instruction.writeData[0].second.size());
                            if(instruction.writeData.size() > 1) data_csv += "...(" + std::to_string(instruction.writeData.size()) + " items)";
                       }
-                       *m_csv_stream << data_csv << "," // Simplified data output
-
+                       *m_csv_stream << data_csv << ","
 
                       << escape_csv(translatedAddr) << ","
                       << escape_csv(description) << "\n";
     }
 }
-
