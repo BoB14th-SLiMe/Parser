@@ -41,4 +41,3 @@ private:
 };
 
 #endif // ASSET_MANAGER_H
-
