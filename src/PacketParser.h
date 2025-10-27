@@ -34,8 +34,7 @@ private:
     AssetManager m_assetManager; // AssetManager 멤버
 
     std::vector<std::unique_ptr<IProtocolParser>> m_protocol_parsers;
-    std::unique_ptr<ArpParser> m_arp_parser;
-    std::unique_ptr<TcpSessionParser> m_tcp_session_parser;
+    
 
     std::map<std::string, struct timeval> m_flow_start_times;
 

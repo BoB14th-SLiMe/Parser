@@ -202,8 +202,15 @@ void S7CommParser::writeCsvHeader(std::ofstream& csv_stream) {
 }
 
 
-bool S7CommParser::isProtocol(const u_char* payload, int size) const {
-    return size >= 17 && payload[0] == 0x03 && payload[5] == 0xf0 && payload[7] == 0x32;
+bool S7CommParser::isProtocol(const PacketInfo& info) const {
+    // S7Comm은 TCP 프로토콜을 사용하고 포트 102를 사용합니다.
+    // 또한, TPKT, COTP, S7Comm 헤더의 특정 필드를 확인합니다.
+    return info.protocol == IPPROTO_TCP &&
+           (info.dst_port == 102 || info.src_port == 102) &&
+           info.payload_size >= 17 &&
+           info.payload[0] == 0x03 && // TPKT Version
+           info.payload[5] == 0xf0 && // COTP PDU Type (CR - Connection Request)
+           info.payload[7] == 0x32;   // S7Comm Protocol ID
 }
 
 void S7CommParser::parse(const PacketInfo& info) {

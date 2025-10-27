@@ -18,12 +18,11 @@ std::string XgtFenParser::getName() const {
 }
 
 // 프로토콜 식별 (참고: 실제 식별은 PacketParser에서 포트 기반으로 수행되어야 함)
-bool XgtFenParser::isProtocol(const u_char* payload, int size) const {
-    // XGT FEN 프로토콜은 일반적으로 TCP 2004 포트를 사용합니다.
-    // 이 함수는 PacketParser가 포트로 식별한 후 호출되므로, 
-    // 여기서는 최소 페이로드 크기만 확인하거나, 알려진 시그니처를 확인할 수 있습니다.
-    // 여기서는 단순화를 위해 true를 반환합니다.
-    return size > 0;
+bool XgtFenParser::isProtocol(const PacketInfo& info) const {
+    // XGT FEN 프로토콜은 TCP 2004 포트를 사용하며, 최소 20바이트의 페이로드를 가집니다.
+    return info.protocol == IPPROTO_TCP &&
+           (info.dst_port == 2004 || info.src_port == 2004) &&
+           info.payload_size >= 20;
 }
 
 // CSV 헤더 작성

@@ -201,8 +201,14 @@ void ModbusParser::writeCsvHeader(std::ofstream& csv_stream) {
                << "pdu.regs.addr,pdu.regs.val,translated_addr,description\n";
 }
 
-bool ModbusParser::isProtocol(const u_char* payload, int size) const {
-    return size >= 7 && payload[2] == 0x00 && payload[3] == 0x00;
+bool ModbusParser::isProtocol(const PacketInfo& info) const {
+    // Modbus TCP는 TCP 프로토콜을 사용하고 포트 502를 사용합니다.
+    // 또한, Modbus ADU의 프로토콜 식별자(MBAP Header의 3, 4번째 바이트)가 0x0000이어야 합니다.
+    return info.protocol == IPPROTO_TCP &&
+           (info.dst_port == 502 || info.src_port == 502) &&
+           info.payload_size >= 7 &&
+           info.payload[2] == 0x00 &&
+           info.payload[3] == 0x00;
 }
 
 void ModbusParser::parse(const PacketInfo& info) {

@@ -1,6 +1,20 @@
 #include "BaseProtocolParser.h"
 #include <sstream>
 
+#include "BaseProtocolParser.h"
+#include <iomanip> // for std::setw, std::setfill
+#include <sstream> // for std::stringstream
+
+// --- 추가: mac_to_string 정적 멤버 함수 구현 ---
+std::string BaseProtocolParser::mac_to_string(const uint8_t* mac) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 6; ++i) {
+        ss << std::setw(2) << static_cast<int>(mac[i]) << (i < 5 ? ":" : "");
+    }
+    return ss.str();
+}
+
 BaseProtocolParser::~BaseProtocolParser() {}
 
 // CSV 이스케이프 처리 구현
@@ -45,18 +59,22 @@ void BaseProtocolParser::writeCsvHeader(std::ofstream& csv_stream) {
 // --- 추가: JSONL 작성 헬퍼 ---
 void BaseProtocolParser::writeJsonl(const PacketInfo& info, const std::string& direction, const std::string& details_json_content) {
     if (m_json_stream && m_json_stream->is_open()) {
-        *m_json_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
-                       << "\"smac\":\"" << info.src_mac << "\",\"dmac\":\"" << info.dst_mac << "\","
-                       << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
-                       << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
-                       << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
-                       << "\"dir\":\"" << direction << "\","
-                       << "\"d\":" << details_json_content << "}\n";
+        *m_json_stream << R"({"@timestamp":")" << info.timestamp << R"(",)"
+                       << R"("flow_id":")" << info.flow_id << R"(",)"
+                       << R"("sip":")" << info.src_ip << R"(",)"
+                       << R"("dip":")" << info.dst_ip << R"(",)"
+                       << R"("sp":)" << info.src_port << R"(,)"
+                       << R"("dp":)" << info.dst_port << R"(,)"
+                       << R"("sq":)" << info.tcp_seq << R"(,)"
+                       << R"("ak":)" << info.tcp_ack << R"(,)"
+                       << R"("fl":)" << (int)info.tcp_flags << R"(,)"
+                       << R"("dir":")" << direction << R"(",)"
+                       << R"("d":)" << details_json_content << R"(})" << std::endl;
     }
 }
 
 // --- 추가: 기본 CSV 라인 작성 헬퍼 (Generic/Unknown 파서용) ---
-void BaseProtocolParser::writeBaseCsvLine(std::ofstream& csv_stream, const PacketInfo& info, const std::string& direction, const std::string& details_json_content) {
+void BaseProtocolParser::writeBaseCsvLine(const PacketInfo& info, const std::string& direction, const std::string& details_json_content) {
     if (m_csv_stream && m_csv_stream->is_open()) {
         *m_csv_stream << info.timestamp << ","
                       << info.src_mac << "," << info.dst_mac << ","
