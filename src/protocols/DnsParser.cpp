@@ -2,6 +2,7 @@
 #include <sstream>
 #include <arpa/inet.h>
 #include <string> // for std::to_string
+#include <iostream> // For std::cout (debugging)
 
 DnsParser::~DnsParser() {}
 
@@ -15,9 +16,10 @@ void DnsParser::writeCsvHeader(std::ofstream& csv_stream) {
 }
 
 
-bool DnsParser::isProtocol(const u_char* payload, int size) const {
-    // DNS typically uses UDP port 53, minimum header size is 12 bytes.
-    return size >= 12;
+bool DnsParser::isProtocol(const PacketInfo& info) const {
+    return info.protocol == IPPROTO_UDP &&
+           (info.dst_port == 53 || info.src_port == 53) &&
+           info.payload_size >= 12;
 }
 
 void DnsParser::parse(const PacketInfo& info) {

@@ -12,15 +12,17 @@ struct PacketInfo {
     std::string flow_id;
     std::string src_mac;
     std::string dst_mac;
+    uint16_t eth_type = 0; // 이더넷 타입 추가
     std::string src_ip;
-    uint16_t src_port;
+    uint16_t src_port = 0;
     std::string dst_ip;
-    uint16_t dst_port;
-    const u_char* payload;
-    int payload_size;
-    uint32_t tcp_seq;
-    uint32_t tcp_ack;
-    uint8_t tcp_flags;
+    uint16_t dst_port = 0;
+    uint8_t protocol = 0; // IP 계층 프로토콜 (e.g., IPPROTO_TCP, IPPROTO_UDP)
+    uint32_t tcp_seq = 0;
+    uint32_t tcp_ack = 0;
+    uint8_t tcp_flags = 0;
+    const u_char* payload = nullptr;
+    int payload_size = 0;
 };
 
 class IProtocolParser {
@@ -28,7 +30,7 @@ public:
     virtual ~IProtocolParser();
 
     virtual std::string getName() const = 0;
-    virtual bool isProtocol(const u_char* payload, int size) const = 0;
+    virtual bool isProtocol(const PacketInfo& info) const = 0;
     virtual void parse(const PacketInfo& info) = 0;
     
     // --- 수정: setOutputStream이 CSV 헤더 작성을 트리거 ---

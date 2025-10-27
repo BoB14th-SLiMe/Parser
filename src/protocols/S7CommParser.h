@@ -26,7 +26,7 @@ public:
     ~S7CommParser() override;
 
     std::string getName() const override;
-    bool isProtocol(const u_char* payload, int size) const override;
+    bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
 
     void writeCsvHeader(std::ofstream& csv_stream) override;

@@ -62,10 +62,8 @@ PacketParser::PacketParser(const std::string& output_dir)
         mkdir(m_output_dir.c_str(), 0755);
     #endif
 
-    m_arp_parser = std::make_unique<ArpParser>();
-    m_tcp_session_parser = std::make_unique<TcpSessionParser>();
-    initialize_output_streams("arp");
-    initialize_output_streams("tcp_session");
+    m_protocol_parsers.push_back(std::make_unique<ArpParser>());
+    m_protocol_parsers.push_back(std::make_unique<TcpSessionParser>());
     
     m_protocol_parsers.push_back(std::make_unique<ModbusParser>(m_assetManager));
     m_protocol_parsers.push_back(std::make_unique<S7CommParser>(m_assetManager));
@@ -99,8 +97,8 @@ void PacketParser::initialize_output_streams(const std::string& protocol) {
         std::string jsonl_filename = m_output_dir + "/" + protocol + ".jsonl";
         std::string csv_filename = m_output_dir + "/" + protocol + ".csv";
         
-        streams.jsonl_stream.open(jsonl_filename, std::ios_base::app);
-        streams.csv_stream.open(csv_filename, std::ios_base::app);
+        streams.jsonl_stream.open(jsonl_filename, std::ios_base::trunc);
+        streams.csv_stream.open(csv_filename, std::ios_base::trunc);
 
         if (!streams.jsonl_stream.is_open()) {
             std::cerr << "Error: Could not open output file " << jsonl_filename << std::endl;
@@ -148,30 +146,28 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
     std::string src_mac_str = mac_to_string_helper(eth_header->src_mac);
     std::string dst_mac_str = mac_to_string_helper(eth_header->dest_mac);
 
-    if (eth_type == 0x0806) { // ARP (Layer 2)
-        auto arp_data = m_arp_parser->parse(header, l3_payload, l3_payload_size);
-        
-        const std::string& timestamp_str = std::get<0>(arp_data);
-        if (timestamp_str.empty()) return;
+    // ARP 패킷 처리
+    if (eth_type == 0x0806) {
+        PacketInfo info;
+        info.timestamp = format_timestamp(header->ts);
+        info.src_mac = src_mac_str;
+        info.dst_mac = dst_mac_str;
+        info.eth_type = eth_type;
+        info.payload = l3_payload;
+        info.payload_size = l3_payload_size;
 
-        uint16_t op_code = std::get<1>(arp_data);
-        const std::string& sha_str = std::get<2>(arp_data);
-        const std::string& spa_str = std::get<3>(arp_data);
-        const std::string& tha_str = std::get<4>(arp_data);
-        const std::string& tpa_str = std::get<5>(arp_data);
-
-        std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
-        
-        if (m_output_streams["arp"].jsonl_stream.is_open()) {
-            std::stringstream details_ss;
-            details_ss << R"({"op":)" << op_code << R"(,"smac":")" << sha_str << R"(","sip":")" << spa_str << R"(","tmac":")" << tha_str << R"(","tip":")" << tpa_str << R"("} ";
-            m_output_streams["arp"].jsonl_stream << R"({"@timestamp":")" << timestamp_str << R"(","dir":")" << direction << R"(","d":)" << details_ss.str() << R"(}
-)";
+        for (const auto& parser : m_protocol_parsers) {
+            if (parser->getName() == "arp") {
+                parser->parse(info);
+                break; // ARP는 단독 처리
+            }
         }
-        return; // ARP 처리는 여기서 종료
+        return;
     }
 
-    if (eth_type == 0x0800) { // IPv4
+    // IPv4 패킷 처리
+    if (eth_type == 0x0800) {
+        if (l3_payload_size < sizeof(IPHeader)) return;
         const IPHeader* ip_header = (const IPHeader*)(l3_payload);
         char src_ip_str[INET_ADDRSTRLEN];
         char dst_ip_str[INET_ADDRSTRLEN];
@@ -181,10 +177,10 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
         const u_char* l4_payload = l3_payload + (ip_header->hl * 4);
         int l4_payload_size = l3_payload_size - (ip_header->hl * 4);
 
+        // TCP 패킷 처리
         if (ip_header->p == IPPROTO_TCP) {
+            if (l4_payload_size < sizeof(TCPHeader)) return;
             const TCPHeader* tcp_header = (const TCPHeader*)(l4_payload);
-            uint16_t src_port = ntohs(tcp_header->sport);
-            uint16_t dst_port = ntohs(tcp_header->dport);
             const u_char* l7_payload = l4_payload + (tcp_header->off * 4);
             int l7_payload_size = l4_payload_size - (tcp_header->off * 4);
 
@@ -192,27 +188,89 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
             info.timestamp = format_timestamp(header->ts);
             info.src_mac = src_mac_str;
             info.dst_mac = dst_mac_str;
+            info.eth_type = eth_type;
             info.src_ip = src_ip_str;
-            info.src_port = src_port;
             info.dst_ip = dst_ip_str;
-            info.dst_port = dst_port;
+            info.src_port = ntohs(tcp_header->sport);
+            info.dst_port = ntohs(tcp_header->dport);
+            info.protocol = IPPROTO_TCP; // Set protocol for TCP
             info.tcp_seq = ntohl(tcp_header->seq);
             info.tcp_ack = ntohl(tcp_header->ack);
             info.tcp_flags = tcp_header->flags;
             info.payload = l7_payload;
             info.payload_size = l7_payload_size;
-            info.flow_id = get_canonical_flow_id(src_ip_str, src_port, dst_ip_str, dst_port);
+            info.flow_id = get_canonical_flow_id(info.src_ip, info.src_port, info.dst_ip, info.dst_port);
 
-            bool parsed = false;
+            bool handled_by_specific_app_parser = false;
             for (const auto& parser : m_protocol_parsers) {
-                if (parser->isProtocol(l7_payload, l7_payload_size)) {
+                const auto& name = parser->getName();
+                // tcp_session, unknown, arp는 여기서 처리하지 않음
+                if (name == "tcp_session" || name == "unknown" || name == "arp") {
+                    continue;
+                }
+
+                if (parser->isProtocol(info)) {
                     parser->parse(info);
-                    parsed = true;
-                    break;
+                    handled_by_specific_app_parser = true;
+                    break; // 특정 프로토콜이 파싱되면 더 이상 다른 파서 실행 안 함
                 }
             }
-            if (!parsed) {
-                m_protocol_parsers.back()->parse(info); // UnknownParser
+
+            if (!handled_by_specific_app_parser) {
+                // 특정 애플리케이션 프로토콜이 처리하지 않은 경우, tcp_session으로 처리
+                for (const auto& parser : m_protocol_parsers) {
+                    if (parser->getName() == "tcp_session") {
+                        parser->parse(info);
+                        break;
+                    }
+                }
+            }
+        }
+        // UDP 패킷 처리
+        else if (ip_header->p == IPPROTO_UDP) {
+            if (l4_payload_size < sizeof(UDPHeader)) return;
+            const UDPHeader* udp_header = (const UDPHeader*)(l4_payload);
+            const u_char* l7_payload = l4_payload + sizeof(UDPHeader);
+            int l7_payload_size = l4_payload_size - sizeof(UDPHeader);
+
+            PacketInfo info;
+            info.timestamp = format_timestamp(header->ts);
+            info.src_mac = src_mac_str;
+            info.dst_mac = dst_mac_str;
+            info.eth_type = eth_type;
+            info.src_ip = src_ip_str;
+            info.dst_ip = dst_ip_str;
+            info.src_port = ntohs(udp_header->sport);
+            info.dst_port = ntohs(udp_header->dport);
+            info.protocol = IPPROTO_UDP; // Set protocol for UDP
+            info.payload = l7_payload;
+            info.payload_size = l7_payload_size;
+            info.flow_id = get_canonical_flow_id(info.src_ip, info.src_port, info.dst_ip, info.dst_port);
+
+            // 2. 특정 애플리케이션 계층 프로토콜 파서 처리
+            bool specific_app_protocol_found = false;
+            for (const auto& parser : m_protocol_parsers) {
+                const auto& name = parser->getName();
+                // tcp_session, unknown, arp는 여기서 처리하지 않음
+                if (name == "tcp_session" || name == "unknown" || name == "arp") {
+                    continue;
+                }
+
+                if (parser->isProtocol(info)) {
+                    parser->parse(info);
+                    specific_app_protocol_found = true;
+                    break; // 특정 프로토콜이 파싱되면 더 이상 다른 파서 실행 안 함
+                }
+            }
+
+            // 3. 특정 애플리케이션 계층 프로토콜이 파싱되지 않았을 때만 UnknownParser 실행
+            if (!specific_app_protocol_found) {
+                for (const auto& parser : m_protocol_parsers) {
+                    if (parser->getName() == "unknown") {
+                        parser->parse(info);
+                        break;
+                    }
+                }
             }
         }
     }
