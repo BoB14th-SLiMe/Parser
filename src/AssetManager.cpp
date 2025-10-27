@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <algorithm>
 
 // CSV 한 줄을 파싱하는 헬퍼 함수
 std::vector<std::string> parseCsvRow(const std::string& line) {
@@ -22,8 +23,61 @@ std::vector<std::string> parseCsvRow(const std::string& line) {
             field += c;
         }
     }
-    fields.push_back(field); // 마지막 필드 추가
+    fields.push_back(field);
     return fields;
+}
+
+// 문자열 trim 헬퍼 함수
+std::string trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\n\r");
+    if (first == std::string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\n\r");
+    return str.substr(first, last - first + 1);
+}
+
+// IP 주소 정규화 함수 (192,168.10.25 -> 192.168.10.25)
+std::string normalizeIp(const std::string& ip) {
+    std::string normalized = ip;
+    
+    // 쉼표를 점으로 변경
+    std::replace(normalized.begin(), normalized.end(), ',', '.');
+    
+    // modbus 포트 제거 (192.168.1.22/502 -> 192.168.1.22)
+    size_t slash_pos = normalized.find('/');
+    if (slash_pos != std::string::npos) {
+        normalized = normalized.substr(0, slash_pos);
+    }
+    
+    // "modbus: " 접두사 제거
+    if (normalized.find("modbus:") != std::string::npos) {
+        size_t colon_pos = normalized.find(':');
+        if (colon_pos != std::string::npos) {
+            normalized = normalized.substr(colon_pos + 1);
+            normalized = trim(normalized);
+            // 다시 포트 제거
+            slash_pos = normalized.find('/');
+            if (slash_pos != std::string::npos) {
+                normalized = normalized.substr(0, slash_pos);
+            }
+        }
+    }
+    
+    return trim(normalized);
+}
+
+// IP 주소 유효성 검사
+bool isValidIp(const std::string& ip) {
+    if (ip.empty()) return false;
+    
+    // 점이 정확히 3개 있어야 함
+    int dot_count = std::count(ip.begin(), ip.end(), '.');
+    if (dot_count != 3) return false;
+    
+    // 각 옥텟이 0-255 범위인지 확인
+    std::regex ip_regex(
+        R"(^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$)"
+    );
+    return std::regex_match(ip, ip_regex);
 }
 
 AssetManager::AssetManager(const std::string& ipCsvPath, 
@@ -49,7 +103,7 @@ AssetManager::AssetManager(const std::string& ipCsvPath,
               << tagDescriptionMap.size() << " tag entries." << std::endl;
 }
 
-// 자산IP CSV 로드
+// 자산IP CSV 로드 (신규 형식 대응)
 void AssetManager::loadIpCsv(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
@@ -57,30 +111,74 @@ void AssetManager::loadIpCsv(const std::string& filepath) {
     }
 
     std::string line;
-    // 헤더 스킵 (필요시) - 이 파일은 헤더가 불규칙하므로 그냥 파싱 시도
+    int line_number = 0;
+    bool header_skipped = false;
+    
+    // 이전 Device Name을 기억 (빈 줄 처리용)
+    std::string last_device_name;
+    
     while (std::getline(file, line)) {
-        std::vector<std::string> fields = parseCsvRow(line);
-
-        // 유선 보안리빙랩 (F열, G열)
-        if (fields.size() > 6) {
-            std::string deviceName = fields[5];
-            std::string ip = fields[6];
-            if (!deviceName.empty() && !ip.empty() && ip.find('.') != std::string::npos) {
-                ipDeviceMap[ip] = deviceName;
+        line_number++;
+        
+        // 빈 줄 스킵
+        if (trim(line).empty()) {
+            continue;
+        }
+        
+        // 헤더 행 스킵 (첫 번째 줄)
+        if (!header_skipped) {
+            if (line.find("Device Name") != std::string::npos || 
+                line.find("IP") != std::string::npos) {
+                header_skipped = true;
+                std::cout << "[INFO] CSV header found and skipped." << std::endl;
+                continue;
             }
         }
-        // 무선 보안리빙랩 (B열, C열)
-        if (fields.size() > 2) {
-             std::string deviceName = fields[1];
-             std::string ip = fields[2];
-             if (!deviceName.empty() && !ip.empty() && ip.find('.') != std::string::npos) {
-                ipDeviceMap[ip] = deviceName;
-             }
+        
+        std::vector<std::string> fields = parseCsvRow(line);
+        
+        // 최소 2개 필드 필요 (Device Name, IP)
+        if (fields.size() < 2) {
+            std::cout << "[WARN] Line " << line_number << " has insufficient fields, skipping." << std::endl;
+            continue;
         }
+        
+        std::string device_name = trim(fields[0]);
+        std::string ip_raw = trim(fields[1]);
+        
+        // IP 정규화
+        std::string ip = normalizeIp(ip_raw);
+        
+        // Device Name이 비어있으면 이전 이름 사용
+        if (device_name.empty() && !last_device_name.empty()) {
+            device_name = last_device_name + " (secondary)";
+        }
+        
+        // IP 유효성 검사
+        if (!isValidIp(ip)) {
+            if (!ip.empty()) {
+                std::cout << "[WARN] Line " << line_number << ": Invalid IP '" 
+                         << ip_raw << "' (normalized: '" << ip << "'), skipping." << std::endl;
+            }
+            continue;
+        }
+        
+        // Device Name이 없고 이전 이름도 없으면 IP만으로 식별
+        if (device_name.empty()) {
+            device_name = "Unknown Device (" + ip + ")";
+        }
+        
+        // 매핑 추가
+        ipDeviceMap[ip] = device_name;
+        last_device_name = device_name;
+        
+        std::cout << "[DEBUG] Mapped: " << ip << " -> " << device_name << std::endl;
     }
+    
+    std::cout << "[INFO] Loaded " << ipDeviceMap.size() << " IP-to-Device mappings." << std::endl;
 }
 
-// 유선_Input / 유선_Output CSV 로드
+// 유선_Input / 유선_Output CSV 로드 (기존 유지)
 void AssetManager::loadTagCsv(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
@@ -106,12 +204,10 @@ void AssetManager::loadTagCsv(const std::string& filepath) {
             if (description.empty()) continue;
 
             for (int col : tagColumns) {
-                if (col < fields.size()) {
+                if (static_cast<size_t>(col) < fields.size()) {
                     std::string tag = fields[col];
                     if (!tag.empty()) {
-                        // Trim leading/trailing whitespace from tag
-                        tag.erase(0, tag.find_first_not_of(" \t\n\r"));
-                        tag.erase(tag.find_last_not_of(" \t\n\r") + 1);
+                        tag = trim(tag);
                         tagDescriptionMap[tag] = description;
                     }
                 }
@@ -125,7 +221,7 @@ std::string AssetManager::getDeviceName(const std::string& ip) const {
     if (it != ipDeviceMap.end()) {
         return it->second;
     }
-    return ""; // 찾지 못하면 빈 문자열 반환
+    return "";
 }
 
 std::string AssetManager::getDescription(const std::string& translatedAddress) const {
@@ -133,11 +229,10 @@ std::string AssetManager::getDescription(const std::string& translatedAddress) c
     if (it != tagDescriptionMap.end()) {
         return it->second;
     }
-    return ""; // 찾지 못하면 빈 문자열 반환
+    return "";
 }
 
 std::string AssetManager::translateXgtAddress(const std::string& pduVarNm) const {
-    // 규칙: %DB001000 -> D500
     if (pduVarNm.empty() || pduVarNm[0] != '%') {
         return "";
     }
@@ -154,15 +249,14 @@ std::string AssetManager::translateXgtAddress(const std::string& pduVarNm) const
             if (type == "DB") prefix = "D";
             else if (type == "MB") prefix = "M";
             else if (type == "PB") prefix = "P";
-            else return ""; // 알 수 없는 타입
+            else return "";
 
             int number = std::stoi(numberStr);
-            int wordAddress = number / 2; // 바이트 주소 -> 워드 주소
+            int wordAddress = number / 2;
 
             return prefix + std::to_string(wordAddress);
         }
     } catch (const std::exception& e) {
-        // stoi 오류 등
         return "";
     }
     return "";
@@ -188,7 +282,7 @@ std::string AssetManager::translateModbusAddress(const std::string& fc_str, unsi
                 offset = 400001;
                 break;
             default:
-                return std::to_string(addr); // No offset for other function codes
+                return std::to_string(addr);
         }
         return std::to_string(offset + addr);
     } catch (const std::exception& e) {
@@ -202,4 +296,3 @@ std::string AssetManager::translateS7Address(const std::string& area_str, const 
     }
     return "DB" + db_str + "," + addr_str;
 }
-

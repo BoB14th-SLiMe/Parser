@@ -302,20 +302,23 @@ void ModbusParser::parse(const PacketInfo& info) {
                 );
                 std::string description = m_assetManager.getDescription(translated_addr);
 
-                *m_csv_stream << info.timestamp << ","
-                              << info.src_mac << "," << info.dst_mac << ","
-                              << info.src_ip << "," << info.src_port << ","
-                              << info.dst_ip << "," << info.dst_port << ","
-                              << info.tcp_seq << "," << info.tcp_ack << "," 
-                              << (int)info.tcp_flags << ","
-                              << direction << ","
-                              << trans_id << ","
-                              << csv_data.fc << "," << csv_data.err << "," 
-                              << csv_data.bc << ","
-                              << "" << "," << "" << "," << "" << ","
-                              << reg.addr << "," << reg.val << ","
-                              << escape_csv(translated_addr) << ","
-                              << escape_csv(description) << "\n";
+                std::stringstream ss;
+                ss << info.timestamp << ","
+                << info.src_mac << "," << info.dst_mac << ","
+                << info.src_ip << "," << info.src_port << ","
+                << info.dst_ip << "," << info.dst_port << ","
+                << info.tcp_seq << "," << info.tcp_ack << "," 
+                << (int)info.tcp_flags << ","
+                << direction << ","
+                << trans_id << ","
+                << csv_data.fc << "," << csv_data.err << "," 
+                << csv_data.bc << ","
+                << "" << "," << "" << "," << "" << ","
+                << reg.addr << "," << reg.val << ","
+                << escape_csv(translated_addr) << ","
+                << escape_csv(description) << "\n";
+                
+                *m_csv_stream << ss.str();
             }
         } else {
             // 단일 값 또는 요청
@@ -330,21 +333,24 @@ void ModbusParser::parse(const PacketInfo& info) {
                 description = m_assetManager.getDescription(translated_addr);
             }
 
-            *m_csv_stream << info.timestamp << ","
-                          << info.src_mac << "," << info.dst_mac << ","
-                          << info.src_ip << "," << info.src_port << ","
-                          << info.dst_ip << "," << info.dst_port << ","
-                          << info.tcp_seq << "," << info.tcp_ack << "," 
-                          << (int)info.tcp_flags << ","
-                          << direction << ","
-                          << trans_id << ","
-                          << csv_data.fc << "," << csv_data.err << "," 
-                          << csv_data.bc << ","
-                          << csv_data.addr << "," << csv_data.qty << "," 
-                          << csv_data.val << ","
-                          << "" << "," << "" << ","
-                          << escape_csv(translated_addr) << ","
-                          << escape_csv(description) << "\n";
+            std::stringstream ss;
+            ss << info.timestamp << ","
+            << info.src_mac << "," << info.dst_mac << ","
+            << info.src_ip << "," << info.src_port << ","
+            << info.dst_ip << "," << info.dst_port << ","
+            << info.tcp_seq << "," << info.tcp_ack << "," 
+            << (int)info.tcp_flags << ","
+            << direction << ","
+            << trans_id << ","
+            << csv_data.fc << "," << csv_data.err << "," 
+            << csv_data.bc << ","
+            << csv_data.addr << "," << csv_data.qty << "," 
+            << csv_data.val << ","
+            << "" << "," << "" << ","
+            << escape_csv(translated_addr) << ","
+            << escape_csv(description) << "\n";
+            
+            *m_csv_stream << ss.str();
         }
     }
 }

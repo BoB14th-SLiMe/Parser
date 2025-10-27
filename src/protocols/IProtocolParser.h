@@ -6,6 +6,9 @@
 #include <vector>
 #include "pcap.h"
 
+// Forward declaration
+class TimeBasedCsvWriter;
+
 // Packet information structure passed to parsers
 struct PacketInfo {
     std::string timestamp;
@@ -33,10 +36,11 @@ public:
     virtual bool isProtocol(const PacketInfo& info) const = 0;
     virtual void parse(const PacketInfo& info) = 0;
     
-    // --- 수정: setOutputStream이 CSV 헤더 작성을 트리거 ---
     virtual void setOutputStream(std::ofstream* json_stream, std::ofstream* csv_stream) = 0;
     
-    // --- 추가: 각 파서가 자신의 CSV 헤더를 작성하도록 함 ---
+    // TimeBasedCsvWriter 설정
+    virtual void setTimeBasedWriter(TimeBasedCsvWriter* writer) = 0;
+    
     virtual void writeCsvHeader(std::ofstream& csv_stream) = 0;
 };
 
