@@ -6,6 +6,7 @@
 /build
 /output
 /pcap
+/assets
 
 *.log
 *.tmp
