@@ -5,8 +5,8 @@
 
 class ArpParser : public BaseProtocolParser {
 public:
-    ArpParser();
-    ~ArpParser() override;
+    ArpParser() = default;
+    ~ArpParser() override = default;
 
     std::string getName() const override;
     bool isProtocol(const PacketInfo& info) const override;

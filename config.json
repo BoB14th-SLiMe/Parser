@@ -1,0 +1,47 @@
+{
+  "redis": {
+    "host": "redis",
+    "port": 6379,
+    "stream_name": "packet_stream",
+    "pubsub_channel": "threat_detected",
+    "max_memory": "2gb"
+  },
+  "kafka": {
+    "bootstrap_servers": "kafka:29092",
+    "topics": {
+      "threat_events": "threat-events",
+      "dos_alerts": "dos-alerts",
+      "raw_packets": "raw-packets"
+    },
+    "compression": "snappy"
+  },
+  "parser": {
+    "capture_interface": "eth0",
+    "buffer_size": 65536,
+    "batch_size": 100,
+    "flush_interval_ms": 1000
+  },
+  "output": {
+    "jsonl": {
+      "enabled": true,
+      "output_dir": "/data/parser-output",
+      "file_prefix": "packets",
+      "rotation_size_mb": 100,
+      "rotation_interval_min": 60,
+      "compression": false
+    }
+  },
+  "detection": {
+    "rule_based": {
+      "enabled": true,
+      "dos_threshold": 1000,
+      "scan_threshold": 100
+    }
+  },
+  "logging": {
+    "level": "info",
+    "file": "/app/logs/parser.log",
+    "max_size_mb": 100,
+    "max_files": 5
+  }
+}

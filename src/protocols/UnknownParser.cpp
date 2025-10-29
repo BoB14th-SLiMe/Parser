@@ -14,7 +14,7 @@ void UnknownParser::writeCsvHeader(std::ofstream& csv_stream) {
 }
 
 
-bool UnknownParser::isProtocol(const PacketInfo& info) const {
+bool UnknownParser::isProtocol(const PacketInfo& /*info*/) const {
     // This parser should be called last and handles any packet.
     return true;
 }

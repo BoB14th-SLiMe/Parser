@@ -1,53 +1,41 @@
-# Use Ubuntu 22.04 as the base image
-FROM ubuntu:22.04 AS builder
+# ============================================
+# C++ Parser - Dockerfile
+# ============================================
+# RealtimeParser/build/parser 바이너리를 실행하는 경량 이미지
 
-# Avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    libpcap-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set the working directory
-WORKDIR /app
-
-# Copy the parser source code (Corrected paths relative to build context)
-COPY ./src ./src
-COPY ./CMakeLists.txt ./
-COPY ./assets ./assets
-
-# Build the parser
-RUN cmake -B build && \
-    cmake --build build
-
-# --- Final Stage ---
-# Use a smaller base image for the final image
 FROM ubuntu:22.04
 
-# Install runtime dependencies (libpcap0.8)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libpcap0.8 \
+# 필수 런타임 라이브러리 설치
+RUN apt-get update && apt-get install -y \
+    libstdc++6 \
+    libgcc-s1 \
+    libc6 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
+# 작업 디렉토리 생성
 WORKDIR /app
 
-# Copy the built parser executable and assets from the builder stage
-COPY --from=builder /app/build/parser .
-COPY --from=builder /app/assets ./assets
+# 빌드된 parser 바이너리 복사
+COPY build/parser /app/parser
 
-# Copy the entrypoint script (Corrected path relative to build context)
-COPY ./entrypoint.sh .
-RUN chmod +x ./entrypoint.sh
+# 설정 파일 복사
+COPY config.json /app/config.json
 
-# Create output directory
-RUN mkdir -p /app/output
+# 실행 권한 부여
+RUN chmod +x /app/parser
 
-# Run the entrypoint script when the container starts
-ENTRYPOINT ["./entrypoint.sh"]
+# 로그 디렉토리 생성
+RUN mkdir -p /app/logs
 
+# 출력 디렉토리 생성
+RUN mkdir -p /data/parser-output
+
+# 환경 변수 설정
+ENV REDIS_HOST=redis
+ENV REDIS_PORT=6379
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+ENV OUTPUT_DIR=/data/parser-output
+
+# 실행
+CMD ["/app/parser"]
