@@ -9,7 +9,7 @@ public:
     ~UnknownParser() override;
 
     std::string getName() const override;
-    bool isProtocol(const u_char* payload, int size) const override;
+    bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
 
     // --- 추가: CSV 헤더 오버라이드 ---

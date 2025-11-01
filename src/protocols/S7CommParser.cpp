@@ -3,8 +3,12 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
-#include <string> // for std::to_string
-#include <algorithm> // for std::max
+#include <string>
+#include <algorithm>
+
+// 생성자
+S7CommParser::S7CommParser(AssetManager& assetManager)
+    : m_assetManager(assetManager) {}
 
 S7CommParser::~S7CommParser() {}
 
@@ -189,21 +193,24 @@ std::string parse_s7_pdu_json(const u_char* s7pdu, int s7pdu_len, const S7CommRe
 // --- IProtocolParser Interface Implementation ---
 std::string S7CommParser::getName() const { return "s7comm"; }
 
-// --- 추가: S7Comm용 CSV 헤더 (정규화 + 확장) ---
+// --- 수정: S7Comm용 CSV 헤더에 description 추가 ---
 void S7CommParser::writeCsvHeader(std::ofstream& csv_stream) {
-    // Base columns
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,";
-    // Normalized 'd' columns from python script
-    csv_stream << "prid,pdu.ros,pdu.prm.fn,pdu.prm.ic,";
-    // Exploded 'itms' columns
-    csv_stream << "pdu.prm.itms.syn,pdu.prm.itms.tsz,pdu.prm.itms.amt,pdu.prm.itms.db,pdu.prm.itms.ar,pdu.prm.itms.addr,";
-    // Exploded 'dat.itms' columns
-    csv_stream << "pdu.dat.itms.rc,pdu.dat.itms.len\n";
+    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
+               << "prid,pdu.ros,pdu.prm.fn,pdu.prm.ic,"
+               << "pdu.prm.itms.syn,pdu.prm.itms.tsz,pdu.prm.itms.amt,pdu.prm.itms.db,pdu.prm.itms.ar,pdu.prm.itms.addr,"
+               << "pdu.dat.itms.rc,pdu.dat.itms.len,description\n";
 }
 
 
-bool S7CommParser::isProtocol(const u_char* payload, int size) const {
-    return size >= 17 && payload[0] == 0x03 && payload[5] == 0xf0 && payload[7] == 0x32;
+bool S7CommParser::isProtocol(const PacketInfo& info) const {
+    // S7Comm은 TCP 프로토콜을 사용하고 포트 102를 사용합니다.
+    // 또한, TPKT, COTP, S7Comm 헤더의 특정 필드를 확인합니다.
+    return info.protocol == IPPROTO_TCP &&
+           (info.dst_port == 102 || info.src_port == 102) &&
+           info.payload_size >= 17 &&
+           info.payload[0] == 0x03 && // TPKT Version
+           info.payload[5] == 0xf0 && // COTP PDU Type (CR - Connection Request)
+           info.payload[7] == 0x32;   // S7Comm Protocol ID
 }
 
 void S7CommParser::parse(const PacketInfo& info) {
@@ -215,14 +222,13 @@ void S7CommParser::parse(const PacketInfo& info) {
     uint8_t rosctr = s7_pdu[1];
 
     std::string pdu_json;
-    std::string direction; 
+    std::string direction;
     S7CommRequestInfo* req_info_ptr = nullptr;
 
     if ((rosctr == 0x02 || rosctr == 0x03) && m_pending_requests[info.flow_id].count(pdu_ref)) {
         direction = "response";
         req_info_ptr = &m_pending_requests[info.flow_id][pdu_ref];
-    }
-    else if (rosctr == 0x01) { // Job
+    } else if (rosctr == 0x01) { // Job
         direction = "request";
         S7CommRequestInfo new_req;
         new_req.timestamp = std::chrono::steady_clock::now();
@@ -241,58 +247,52 @@ void S7CommParser::parse(const PacketInfo& info) {
     } else {
         return; // Not a job or a mapped response
     }
-    
+
     // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
     pdu_json = parse_s7_pdu_json(s7_pdu, s7_pdu_len, (direction == "response") ? req_info_ptr : nullptr);
     std::stringstream details_ss_json;
-    details_ss_json << "{\"prid\":" << pdu_ref << ",\"pdu\":" << pdu_json << "}";
+    details_ss_json << R"({"prid":)" << pdu_ref << R"(,"pdu":)" << pdu_json << R"(})";
     writeJsonl(info, direction, details_ss_json.str());
 
-    // --- 2. CSV 파일 쓰기 (정규화 + 확장) ---
+    // --- 2. CSV 파일 쓰기 ---
     S7ParsedData csv_data = parse_s7_pdu_structured(s7_pdu, s7_pdu_len, (direction == "response") ? req_info_ptr : nullptr);
-    
     if (m_csv_stream && m_csv_stream->is_open()) {
-        std::stringstream base_csv_line;
-        base_csv_line << info.timestamp << ","
-                      << info.src_mac << "," << info.dst_mac << ","
-                      << info.src_ip << "," << info.src_port << ","
-                      << info.dst_ip << "," << info.dst_port << ","
-                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
-                      << direction << ",";
-        
-        std::stringstream details_csv_line;
-        details_csv_line << pdu_ref << ","
-                         << csv_data.ros << "," << csv_data.fn << "," << csv_data.ic << ",";
+        // 요청/응답의 각 아이템을 별도 라인으로 작성
+        if (!csv_data.param_items.empty()) {
+            for (size_t i = 0; i < csv_data.param_items.size(); ++i) {
+                const auto& p_item = csv_data.param_items[i];
+                const S7DataItem* d_item = (i < csv_data.data_items.size()) ? &csv_data.data_items[i] : nullptr;
 
-        size_t max_items = std::max(csv_data.param_items.size(), csv_data.data_items.size());
+                std::string translated_addr = m_assetManager.translateS7Address(p_item.ar, p_item.db, p_item.addr);
+                std::string description = m_assetManager.getDescription(translated_addr);
 
-        if (max_items == 0) {
-            // Write one line with empty item details
-            *m_csv_stream << base_csv_line.str() << details_csv_line.str()
-                          << ",,,,,,,,\n"; // 8 empty fields for param_items + data_items
-        } else {
-            // Explode logic: write one line per item
-            for (size_t i = 0; i < max_items; ++i) {
-                *m_csv_stream << base_csv_line.str() << details_csv_line.str();
-                
-                if (i < csv_data.param_items.size()) {
-                    const auto& item = csv_data.param_items[i];
-                    *m_csv_stream << item.syn << "," << item.tsz << "," << item.amt << ","
-                                  << item.db << "," << item.ar << "," << item.addr << ",";
-                } else {
-                    *m_csv_stream << ",,,,,,"; // 6 empty param item fields
-                }
-
-                if (i < csv_data.data_items.size()) {
-                    const auto& item = csv_data.data_items[i];
-                    *m_csv_stream << item.rc << "," << item.len << "\n";
-                } else {
-                    *m_csv_stream << ",,\n"; // 2 empty data item fields
-                }
+                *m_csv_stream << info.timestamp << ","
+                              << info.src_mac << "," << info.dst_mac << ","
+                              << info.src_ip << "," << info.src_port << ","
+                              << info.dst_ip << "," << info.dst_port << ","
+                              << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                              << direction << ","
+                              << pdu_ref << "," << csv_data.ros << "," << csv_data.fn << "," << csv_data.ic << ","
+                              << p_item.syn << "," << p_item.tsz << "," << p_item.amt << "," << p_item.db << "," << p_item.ar << "," << p_item.addr << ","
+                              << (d_item ? d_item->rc : "") << "," << (d_item ? d_item->len : "") << ","
+                              << escape_csv(description) << "\n";
             }
+        } else {
+            // 아이템이 없는 경우 (예: Job Setup)
+            *m_csv_stream << info.timestamp << ","
+                          << info.src_mac << "," << info.dst_mac << ","
+                          << info.src_ip << "," << info.src_port << ","
+                          << info.dst_ip << "," << info.dst_port << ","
+                          << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
+                          << direction << ","
+                          << pdu_ref << "," << csv_data.ros << "," << csv_data.fn << "," << csv_data.ic << ","
+                          << "" << "," << "" << "," << "" << "," << "" << "," << "" << "," << "" << "," // param_items
+                          << "" << "," << "" << "," // data_items
+                          << "" << "\n"; // description
         }
     }
-    
+
+    // 요청-응답 매핑 정리
     if (direction == "response") {
         m_pending_requests[info.flow_id].erase(pdu_ref);
     }

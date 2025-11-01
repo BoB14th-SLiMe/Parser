@@ -2,6 +2,7 @@
 #include <sstream>
 #include <cstring> // For memcmp
 #include <string> // for std::to_string
+#include <iostream> // For std::cout (debugging)
 
 GenericParser::~GenericParser() {}
 
@@ -19,25 +20,30 @@ void GenericParser::writeCsvHeader(std::ofstream& csv_stream) {
 }
 
 
-bool GenericParser::isProtocol(const u_char* payload, int size) const {
-    if (m_name == "ethernet_ip") {
-        return size >= 24;
+bool GenericParser::isProtocol(const PacketInfo& info) const {
+    if (info.protocol == IPPROTO_TCP) {
+        if (m_name == "ethernet_ip") {
+            return info.src_port == 44818 || info.dst_port == 44818;
+        }
+        if (m_name == "iec104") {
+            return info.src_port == 2404 || info.dst_port == 2404;
+        }
+        if (m_name == "mms") {
+            return info.src_port == 102 || info.dst_port == 102;
+        }
+        if (m_name == "opc_ua") {
+            return info.src_port == 4840 || info.dst_port == 4840;
+        }
     }
-    if (m_name == "iec104") {
-        return size >= 2 && payload[0] == 0x68;
-    }
-    if (m_name == "mms") {
-        return size > 8 && payload[0] == 0x03 && payload[5] != 0xf0 && payload[7] != 0x32;
-    }
-    if (m_name == "opc_ua") {
-        return size >= 4 && memcmp(payload, "HELO", 4) == 0;
-    }
-    if (m_name == "bacnet") {
-        return size >= 4 && payload[0] == 0x81 && (payload[1] == 0x0a || payload[1] == 0x0b);
-    }
-    if (m_name == "dhcp") {
-        if (size < 240) return false;
-        return payload[236] == 0x63 && payload[237] == 0x82 && payload[238] == 0x53 && payload[239] == 0x63;
+    else if (info.protocol == IPPROTO_UDP) {
+        if (m_name == "dhcp") {
+                if (m_name == "dhcp") {
+                return info.src_port == 67 || info.dst_port == 67 || info.src_port == 68 || info.dst_port == 68;
+            }
+            }
+        if (m_name == "bacnet") {
+            return info.src_port == 47808 || info.dst_port == 47808;
+        }
     }
     return false;
 }
@@ -45,10 +51,15 @@ bool GenericParser::isProtocol(const u_char* payload, int size) const {
 void GenericParser::parse(const PacketInfo& info) {
     std::stringstream details_ss_json;
     details_ss_json << "{\"len\":" << info.payload_size << "}";
-    std::string direction = "unknown";
+    std::string direction = "";
+    if (info.src_port == 67 || info.src_port == 68) direction = "client_to_server";
+    else if (info.dst_port == 67 || info.dst_port == 68) direction = "server_to_client";
+    else direction = "unknown";
 
     // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
-    writeJsonl(info, direction, details_ss_json.str());
+    if (m_json_stream && m_json_stream->is_open()) {
+        writeJsonl(info, direction, details_ss_json.str());
+    }
 
     // --- 2. CSV 파일 쓰기 (정규화된(flattened) 컬럼) ---
     if (m_csv_stream && m_csv_stream->is_open()) {

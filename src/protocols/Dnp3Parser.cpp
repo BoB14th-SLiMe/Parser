@@ -14,9 +14,14 @@ void Dnp3Parser::writeCsvHeader(std::ofstream& csv_stream) {
 }
 
 
-bool Dnp3Parser::isProtocol(const u_char* payload, int size) const {
-    // DNP3 Link Layer Start Bytes: 0x05 0x64
-    return size >= 2 && payload[0] == 0x05 && payload[1] == 0x64;
+bool Dnp3Parser::isProtocol(const PacketInfo& info) const {
+    // DNP3는 TCP 또는 UDP 프로토콜을 사용하고 포트 20000을 사용합니다.
+    // 또한, DNP3 Link Layer Start Bytes: 0x05 0x64로 시작합니다.
+    return (info.protocol == IPPROTO_TCP || info.protocol == IPPROTO_UDP) &&
+           (info.dst_port == 20000 || info.src_port == 20000) &&
+           info.payload_size >= 2 &&
+           info.payload[0] == 0x05 &&
+           info.payload[1] == 0x64;
 }
 
 void Dnp3Parser::parse(const PacketInfo& info) {

@@ -7,7 +7,8 @@
 #include <string>
 #include <stdexcept>
 
-ModbusParser::ModbusParser() {}
+ModbusParser::ModbusParser(AssetManager& assetManager)
+    : m_assetManager(assetManager) {}
 
 ModbusParser::~ModbusParser() {}
 
@@ -204,22 +205,15 @@ std::string ModbusParser::getName() const {
 void ModbusParser::writeCsvHeader(std::ofstream& csv_stream) {
     csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
                << "tid,pdu.fc,pdu.err,pdu.bc,pdu.addr,pdu.qty,pdu.val,"
-               << "pdu.regs.addr,pdu.regs.val,translated_addr\n";
+               << "pdu.regs.addr,pdu.regs.val,translated_addr,description\n";
 }
 
-bool ModbusParser::isProtocol(const u_char* payload, int size) const { // <- (O) IProtocolParser.h와 일치시킵니다.
-    // isProtocol은 L4(TCP/Port) 정보가 아닌,
-    // L7 페이로드(payload)만 보고 Modbus인지 판단해야 합니다.
-    // (포트 검사는 이 함수를 호출하기 전에 이미 수행되었을 것입니다)
-    
-    // Modbus/TCP (MBAP) 헤더는 최소 7바이트입니다.
-    if (size < 7) {
-        return false;
-    }
-
-    // Modbus/TCP 시그니처: Protocol ID (bytes 2, 3)는 항상 0x0000 입니다.
-    // (기존 로직 중 일부 재사용)
-    return (payload[2] == 0x00 && payload[3] == 0x00);
+bool ModbusParser::isProtocol(const PacketInfo& info) const {
+    return info.protocol == IPPROTO_TCP &&
+           (info.dst_port == 502 || info.src_port == 502) &&
+           info.payload_size >= 7 &&
+           info.payload[2] == 0x00 &&
+           info.payload[3] == 0x00;
 }
 
 void ModbusParser::parse(const PacketInfo& info) {
@@ -302,36 +296,61 @@ void ModbusParser::parse(const PacketInfo& info) {
         if (!csv_data.regs.empty()) {
             // 여러 레지스터: 각각 한 줄씩
             for (const auto& reg : csv_data.regs) {
+                std::string translated_addr = m_assetManager.translateModbusAddress(
+                    csv_data.fc, 
+                    std::stoul(reg.addr)
+                );
+                std::string description = m_assetManager.getDescription(translated_addr);
 
-                *m_csv_stream << info.timestamp << ","
-                              << info.src_mac << "," << info.dst_mac << ","
-                              << info.src_ip << "," << info.src_port << ","
-                              << info.dst_ip << "," << info.dst_port << ","
-                              << info.tcp_seq << "," << info.tcp_ack << "," 
-                              << (int)info.tcp_flags << ","
-                              << trans_id << ","
-                              << csv_data.fc << "," << csv_data.err << "," 
-                              << csv_data.bc << ","
-                              << "" << "," << "" << "," << "" << ","
-                              << reg.addr << "," << reg.val << "," 
-                              << "" << "\n"; // <--- 수정된 부분
+                std::stringstream ss;
+                ss << info.timestamp << ","
+                << info.src_mac << "," << info.dst_mac << ","
+                << info.src_ip << "," << info.src_port << ","
+                << info.dst_ip << "," << info.dst_port << ","
+                << info.tcp_seq << "," << info.tcp_ack << "," 
+                << (int)info.tcp_flags << ","
+                << direction << ","
+                << trans_id << ","
+                << csv_data.fc << "," << csv_data.err << "," 
+                << csv_data.bc << ","
+                << "" << "," << "" << "," << "" << ","
+                << reg.addr << "," << reg.val << ","
+                << escape_csv(translated_addr) << ","
+                << escape_csv(description) << "\n";
+                
+                *m_csv_stream << ss.str();
             }
         } else {
             // 단일 값 또는 요청
+            std::string translated_addr = "";
+            std::string description = "";
             
-            *m_csv_stream << info.timestamp << ","
-                          << info.src_mac << "," << info.dst_mac << ","
-                          << info.src_ip << "," << info.src_port << ","
-                          << info.dst_ip << "," << info.dst_port << ","
-                          << info.tcp_seq << "," << info.tcp_ack << "," 
-                          << (int)info.tcp_flags << ","
-                          << trans_id << ","
-                          << csv_data.fc << "," << csv_data.err << "," 
-                          << csv_data.bc << ","
-                          << csv_data.addr << "," << csv_data.qty << "," 
-                          << csv_data.val << ","
-                          << "" << "," << "" << "," 
-                          << "" << "\n"; // <--- 수정된 부분
+            if (!csv_data.addr.empty()) {
+                translated_addr = m_assetManager.translateModbusAddress(
+                    csv_data.fc, 
+                    std::stoul(csv_data.addr)
+                );
+                description = m_assetManager.getDescription(translated_addr);
+            }
+
+            std::stringstream ss;
+            ss << info.timestamp << ","
+            << info.src_mac << "," << info.dst_mac << ","
+            << info.src_ip << "," << info.src_port << ","
+            << info.dst_ip << "," << info.dst_port << ","
+            << info.tcp_seq << "," << info.tcp_ack << "," 
+            << (int)info.tcp_flags << ","
+            << direction << ","
+            << trans_id << ","
+            << csv_data.fc << "," << csv_data.err << "," 
+            << csv_data.bc << ","
+            << csv_data.addr << "," << csv_data.qty << "," 
+            << csv_data.val << ","
+            << "" << "," << "" << ","
+            << escape_csv(translated_addr) << ","
+            << escape_csv(description) << "\n";
+            
+            *m_csv_stream << ss.str();
         }
     }
 }

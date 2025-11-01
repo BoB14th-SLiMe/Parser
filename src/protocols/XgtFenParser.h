@@ -2,50 +2,70 @@
 #define XGT_FEN_PARSER_H
 
 #include "BaseProtocolParser.h"
-#include <chrono>
+#include "../AssetManager.h" // AssetManager 헤더 포함
+#include <cstdint>
 #include <vector>
-#include <map>
 #include <string>
 
-// FEnet 요청에 대한 정보를 저장하는 구조체
-struct XgtFenRequestInfo {
-    uint16_t invoke_id = 0;
-    uint16_t command = 0;
-    uint16_t data_type = 0;
-    std::chrono::steady_clock::time_point timestamp;
+// Structure to hold parsed XGT FEnet Header information
+struct XgtFenHeader {
+    std::string companyId;
+    uint16_t reserved1;
+    uint16_t plcInfo;
+    uint8_t cpuInfo;
+    uint8_t sourceOfFrame;
+    uint16_t invokeId;
+    uint16_t length; // Length of Application Instruction
+    uint8_t fenetPosition;
+    uint8_t reserved2; // Sometimes referred to as BCC, but seems reserved in examples
 };
 
-// --- 추가: XGT 파싱 결과를 담을 구조체 ---
-struct XgtFenParsedData {
-    std::string cmd;
-    std::string dt;
-    std::string bc;
-    std::string err;
-    std::string ecode;
-    
-    std::string var_nm;
-    std::string var_len;
-    std::string data_hex;
+// Structure to hold parsed XGT FEnet Instruction information
+struct XgtFenInstruction {
+    uint16_t command;
+    uint16_t dataType;
+    bool is_continuous; // <<< Added this flag
+    uint16_t reserved;
+    uint16_t blockCount;
+    // For variable read/write
+    std::vector<std::pair<uint16_t, std::string>> variables; // Length + Name
+    // For continuous read/write
+    std::string variableName;
+    uint16_t dataSize; // Size for continuous read request, or total data size in response
+    // For individual write
+    std::vector<std::pair<uint16_t, std::vector<uint8_t>>> writeData; // Length + Data
+    // For read response
+    uint16_t errorStatus = 0; // Initialize to 0 (success)
+    uint16_t errorInfoOrBlockCount = 0; // Depends on errorStatus
+    std::vector<std::pair<uint16_t, std::vector<uint8_t>>> readData; // Length + Data for individual read response
+    std::vector<uint8_t> continuousReadData; // Data for continuous read response
 };
 
 
 class XgtFenParser : public BaseProtocolParser {
 public:
+    // AssetManager 참조를 받는 생성자
+    explicit XgtFenParser(AssetManager& assetManager);
     ~XgtFenParser() override;
 
     std::string getName() const override;
-    bool isProtocol(const u_char* payload, int size) const override;
+    bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
 
-    // --- 추가: CSV 헤더 오버라이드 ---
     void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
-    // Flow ID와 Invoke ID를 키로 사용하여 보류 중인 요청을 관리
-    std::map<std::string, std::map<uint16_t, XgtFenRequestInfo>> m_pending_requests;
+    AssetManager& m_assetManager; // AssetManager 참조 저장
 
-    // --- 추가: CSV 출력을 위한 구조적 파서 ---
-    XgtFenParsedData parse_pdu_structured(const u_char* pdu, int pdu_len, bool is_response);
+    // Helper functions for parsing
+    bool parseHeader(const u_char* payload, size_t size, XgtFenHeader& header);
+    bool parseInstruction(const u_char* instruction_payload, size_t instruction_size, const XgtFenHeader& header, XgtFenInstruction& instruction);
+    std::string bytesToHexString(const uint8_t* bytes, size_t size);
 };
 
+// Helper function to read little-endian values
+template <typename T>
+T read_le(const u_char* buffer);
+
 #endif // XGT_FEN_PARSER_H
+

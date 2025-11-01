@@ -51,3 +51,5 @@ parser (또는 parser.exe) 실행 파일이 생성됩니다.
 ```
 결과물은 output/ 디렉토리에 프로토콜별 .csv와 .jsonl 파일로 저장됩니다.
 (예: output/s7comm.csv, output/modbus_tcp.csv)
+
+streams.csv_stream.std::ostream::rdbuf(m_capture_buffers[protocol].get());

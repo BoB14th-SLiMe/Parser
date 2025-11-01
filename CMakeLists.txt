@@ -1,17 +1,18 @@
 # CMake 최소 요구 버전
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 
 # 프로젝트 이름 설정
 project(PacketParser C CXX)
 
 # C++ 표준 설정
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # 'parser'라는 이름의 실행 파일 생성
 add_executable(parser
     src/main.cpp
     src/PacketParser.cpp
+    src/TimeBasedCsvWriter.cpp
     src/protocols/BaseProtocolParser.cpp
     src/protocols/ModbusParser.cpp
     src/protocols/S7CommParser.cpp
@@ -23,6 +24,7 @@ add_executable(parser
     src/protocols/ArpParser.cpp
     src/protocols/UnknownParser.cpp
     src/protocols/TcpSessionParser.cpp
+    src/AssetManager.cpp
 )
 
 # --- 플랫폼에 따라 pcap 라이브러리 찾기 ---
@@ -56,5 +58,6 @@ endif()
 # 헤더 파일 검색 경로 추가
 target_include_directories(parser PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
     ${PCAP_INCLUDE_DIR}
 )

@@ -50,6 +50,22 @@ struct TCPHeader {
     uint16_t urp;       // Urgent Pointer
 };
 
+// TCP Flags
+#define TH_FIN  0x01
+#define TH_SYN  0x02
+#define TH_RST  0x04
+#define TH_PUSH 0x08
+#define TH_ACK  0x10
+#define TH_URG  0x20
+
+// UDP Header (8 bytes)
+struct UDPHeader {
+    uint16_t sport;     // Source Port
+    uint16_t dport;     // Destination Port
+    uint16_t len;       // UDP Length
+    uint16_t sum;       // UDP Checksum
+};
+
 // ARP Header (28 bytes for IPv4 over Ethernet)
 struct ARPHeader {
     uint16_t htype;    // Hardware Type
