@@ -274,9 +274,9 @@ void TimeBasedCsvWriter::addRecord(const std::string& protocol, const std::strin
         
         static int log_counter = 0;
         if (++log_counter % 100 == 0) {
-            std::cout << "[INFO] Added record #" << log_counter << " - Protocol: " << protocol 
-                      << ", TimeSlot: " << time_slot 
-                      << ", Total slots: " << m_time_slots.size() << std::endl;
+            // std::cout << "[INFO] Added record #" << log_counter << " - Protocol: " << protocol 
+            //           << ", TimeSlot: " << time_slot 
+            //           << ", Total slots: " << m_time_slots.size() << std::endl;
         }
     } else {
         std::cerr << "[ERROR] Empty time slot for timestamp: " << record.timestamp << std::endl;

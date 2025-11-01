@@ -56,17 +56,14 @@ ModbusParsedData parse_modbus_pdu_structured(const u_char* pdu, int pdu_len, boo
                         uint8_t byte_count = pdu_data[0];
                         data.bc = std::to_string(byte_count);
                         
-                        // Response는 항상 레지스터 값을 파싱 시도
                         if (byte_count > 0 && data_len >= (1 + byte_count)) {
                             const u_char* reg_data = pdu_data + 1;
                             int num_registers = byte_count / 2;
-                            
-                            // req_info가 있으면 start_address 사용, 없으면 0부터 시작
                             uint16_t start_addr = req_info ? req_info->start_address : 0;
                             
                             for (int i = 0; i < num_registers; ++i) {
                                 uint16_t reg_value = safe_ntohs(reg_data + (i * 2));
-                                uint16_t reg_addr = start_addr + i;  // 명시적으로 계산
+                                uint16_t reg_addr = start_addr + i;
                                 data.regs.push_back({
                                     std::to_string(reg_addr),
                                     std::to_string(reg_value)
@@ -139,7 +136,7 @@ std::string parse_modbus_pdu_json(const u_char* pdu, int pdu_len, bool is_respon
                             uint16_t start_addr = req_info ? req_info->start_address : 0;
                             for (int i = 0; i < num_registers; ++i) {
                                 if (i > 0) ss << ",";
-                                uint16_t reg_addr = start_addr + i;  // 명시적으로 계산
+                                uint16_t reg_addr = start_addr + i;
                                 ss << "\"" << reg_addr << "\":"
                                    << safe_ntohs(reg_data + i * 2);
                             }
@@ -182,22 +179,6 @@ std::string parse_modbus_pdu_json(const u_char* pdu, int pdu_len, bool is_respon
     return ss.str();
 }
 
-long getModbusOffset(const std::string& fc_str) {
-    if (fc_str.empty()) return 0;
-    try {
-        int fc = std::stoi(fc_str);
-        switch (fc) {
-            case 0: return 1;
-            case 1: return 10001;
-            case 3: return 30001;
-            case 4: return 40001;
-            default: return 0;
-        }
-    } catch (const std::exception& e) {
-        return 0;
-    }
-}
-
 std::string ModbusParser::getName() const { 
     return "modbus_tcp"; 
 }
@@ -205,12 +186,13 @@ std::string ModbusParser::getName() const {
 void ModbusParser::writeCsvHeader(std::ofstream& csv_stream) {
     csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
                << "tid,pdu.fc,pdu.err,pdu.bc,pdu.addr,pdu.qty,pdu.val,"
-               << "pdu.regs.addr,pdu.regs.val,translated_addr,description\n";
+               << "pdu.regs.addr,pdu.regs.val,translated_addr,description,device\n";
 }
 
 bool ModbusParser::isProtocol(const PacketInfo& info) const {
     return info.protocol == IPPROTO_TCP &&
-           (info.dst_port == 502 || info.src_port == 502) &&
+           (info.dst_port == 502 || info.src_port == 502 || 
+            info.dst_port == 1000 || info.src_port == 1000) &&  // Power Meter 포트 추가
            info.payload_size >= 7 &&
            info.payload[2] == 0x00 &&
            info.payload[3] == 0x00;
@@ -223,30 +205,26 @@ void ModbusParser::parse(const PacketInfo& info) {
     
     if (pdu_len < 1) return;
 
-    // 포트 기반으로 Request/Response 구분
-    bool is_request = (info.dst_port == 502);
-    bool is_response = (info.src_port == 502);
+    // 서버 포트 판별 (502 또는 1000)
+    bool is_request = (info.dst_port == 502 || info.dst_port == 1000);
+    bool is_response = (info.src_port == 502 || info.src_port == 1000);
     
     std::string direction = is_request ? "request" : "response";
     std::string pdu_json;
     ModbusParsedData csv_data;
     ModbusRequestInfo* req_info_ptr = nullptr;
 
-    // Flow 식별자 생성 (양방향 통신을 위해 클라이언트 포트 사용)
-    // Modbus에서는 클라이언트가 502가 아닌 포트를 사용하므로
-    // 502가 아닌 포트를 기준으로 flow를 식별
+    // 서버와 클라이언트 IP/Port 결정
     std::string flow_key;
     std::string client_ip, server_ip;
     uint16_t client_port, server_port;
     
-    if (info.src_port == 502) {
-        // Response: src가 서버
+    if (info.src_port == 502 || info.src_port == 1000) {
         server_ip = info.src_ip;
         server_port = info.src_port;
         client_ip = info.dst_ip;
         client_port = info.dst_port;
     } else {
-        // Request: dst가 서버
         server_ip = info.dst_ip;
         server_port = info.dst_port;
         client_ip = info.src_ip;
@@ -260,8 +238,10 @@ void ModbusParser::parse(const PacketInfo& info) {
     uint8_t current_fc = pdu[0] & 0x7F;
     uint32_t req_key = (static_cast<uint32_t>(trans_id) << 8) | current_fc;
     
+    // 디바이스 정보 조회
+    std::string device_name = m_assetManager.getDeviceName(server_ip);
+    
     if (is_response) {
-        // Response: pending_requests에서 조회만 (삭제하지 않음)
         if (m_pending_requests[flow_key].count(req_key)) {
             req_info_ptr = &m_pending_requests[flow_key][req_key];
         }
@@ -269,11 +249,9 @@ void ModbusParser::parse(const PacketInfo& info) {
         pdu_json = parse_modbus_pdu_json(pdu, pdu_len, true, req_info_ptr);
         csv_data = parse_modbus_pdu_structured(pdu, pdu_len, true, req_info_ptr);
     } else {
-        // Request: 이전 요청이 있으면 덮어쓰기 (새로운 요청이 오면 이전 것은 완료된 것으로 간주)
         ModbusRequestInfo new_req;
         new_req.function_code = current_fc;
         
-        // Start address 저장 (FC 1-6, 15-16)
         if (pdu_len >= 3) {
             if ((new_req.function_code >= 1 && new_req.function_code <= 6) ||
                 (new_req.function_code == 15 || new_req.function_code == 16)) {
@@ -294,61 +272,97 @@ void ModbusParser::parse(const PacketInfo& info) {
     // CSV 파일 쓰기
     if (m_csv_stream && m_csv_stream->is_open()) {
         if (!csv_data.regs.empty()) {
-            // 여러 레지스터: 각각 한 줄씩
+            // 여러 레지스터: 각각 한 줄씩 (개선된 매핑 사용)
             for (const auto& reg : csv_data.regs) {
-                std::string translated_addr = m_assetManager.translateModbusAddress(
-                    csv_data.fc, 
-                    std::stoul(reg.addr)
-                );
-                std::string description = m_assetManager.getDescription(translated_addr);
+                std::string translated_addr;
+                std::string description;
+                
+                try {
+                    unsigned long reg_addr = std::stoul(reg.addr);
+                    int fc = std::stoi(csv_data.fc);
+                    
+                    // === 개선된 레지스터 매핑 조회 ===
+                    bool found = m_assetManager.getRegisterInfo(
+                        server_ip, 
+                        server_port, 
+                        fc, 
+                        reg_addr,
+                        translated_addr,
+                        description
+                    );
+                    
+                    if (!found) {
+                        // 매핑이 없으면 기본 변환
+                        std::cout << "[DEBUG] No mapping found for " << server_ip 
+                                  << ":" << server_port << " FC" << fc 
+                                  << " Addr:" << reg_addr << std::endl;
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[ERROR] Register mapping failed: " << e.what() << std::endl;
+                    translated_addr = reg.addr;
+                    description = "Parse Error";
+                }
 
                 std::stringstream ss;
                 ss << info.timestamp << ","
-                << info.src_mac << "," << info.dst_mac << ","
-                << info.src_ip << "," << info.src_port << ","
-                << info.dst_ip << "," << info.dst_port << ","
-                << info.tcp_seq << "," << info.tcp_ack << "," 
-                << (int)info.tcp_flags << ","
-                << direction << ","
-                << trans_id << ","
-                << csv_data.fc << "," << csv_data.err << "," 
-                << csv_data.bc << ","
-                << "" << "," << "" << "," << "" << ","
-                << reg.addr << "," << reg.val << ","
-                << escape_csv(translated_addr) << ","
-                << escape_csv(description) << "\n";
+                   << info.src_mac << "," << info.dst_mac << ","
+                   << info.src_ip << "," << info.src_port << ","
+                   << info.dst_ip << "," << info.dst_port << ","
+                   << info.tcp_seq << "," << info.tcp_ack << "," 
+                   << (int)info.tcp_flags << ","
+                   << direction << ","
+                   << trans_id << ","
+                   << csv_data.fc << "," << csv_data.err << "," 
+                   << csv_data.bc << ","
+                   << "" << "," << "" << "," << "" << ","
+                   << reg.addr << "," << reg.val << ","
+                   << escape_csv(translated_addr) << ","
+                   << escape_csv(description) << ","
+                   << escape_csv(device_name) << "\n";
                 
                 *m_csv_stream << ss.str();
             }
         } else {
             // 단일 값 또는 요청
-            std::string translated_addr = "";
-            std::string description = "";
+            std::string translated_addr;
+            std::string description;
             
             if (!csv_data.addr.empty()) {
-                translated_addr = m_assetManager.translateModbusAddress(
-                    csv_data.fc, 
-                    std::stoul(csv_data.addr)
-                );
-                description = m_assetManager.getDescription(translated_addr);
+                try {
+                    unsigned long reg_addr = std::stoul(csv_data.addr);
+                    int fc = std::stoi(csv_data.fc);
+                    
+                    m_assetManager.getRegisterInfo(
+                        server_ip, 
+                        server_port, 
+                        fc, 
+                        reg_addr,
+                        translated_addr, 
+                        description
+                    );
+                } catch (const std::exception& e) {
+                    translated_addr = csv_data.addr;
+                    description = "Parse Error";
+                }
             }
 
             std::stringstream ss;
             ss << info.timestamp << ","
-            << info.src_mac << "," << info.dst_mac << ","
-            << info.src_ip << "," << info.src_port << ","
-            << info.dst_ip << "," << info.dst_port << ","
-            << info.tcp_seq << "," << info.tcp_ack << "," 
-            << (int)info.tcp_flags << ","
-            << direction << ","
-            << trans_id << ","
-            << csv_data.fc << "," << csv_data.err << "," 
-            << csv_data.bc << ","
-            << csv_data.addr << "," << csv_data.qty << "," 
-            << csv_data.val << ","
-            << "" << "," << "" << ","
-            << escape_csv(translated_addr) << ","
-            << escape_csv(description) << "\n";
+               << info.src_mac << "," << info.dst_mac << ","
+               << info.src_ip << "," << info.src_port << ","
+               << info.dst_ip << "," << info.dst_port << ","
+               << info.tcp_seq << "," << info.tcp_ack << "," 
+               << (int)info.tcp_flags << ","
+               << direction << ","
+               << trans_id << ","
+               << csv_data.fc << "," << csv_data.err << "," 
+               << csv_data.bc << ","
+               << csv_data.addr << "," << csv_data.qty << "," 
+               << csv_data.val << ","
+               << "" << "," << "" << ","
+               << escape_csv(translated_addr) << ","
+               << escape_csv(description) << ","
+               << escape_csv(device_name) << "\n";
             
             *m_csv_stream << ss.str();
         }
