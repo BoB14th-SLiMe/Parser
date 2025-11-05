@@ -1,0 +1,45 @@
+{
+  "parser": {
+    "mode": "training",
+    "capture_interface": "eth0",
+    "buffer_size": 65536,
+    "batch_size": 100
+  },
+  "output": {
+    "csv": {
+      "enabled": true,
+      "output_dir": "/data/csv-output",
+      "file_prefix": "training_data",
+      "rotation_size_mb": 100,
+      "rotation_interval_min": 60,
+      "compression": false,
+      "delimiter": ",",
+      "include_header": true,
+      "columns": [
+        "timestamp",
+        "src_ip",
+        "dst_ip",
+        "protocol",
+        "src_port",
+        "dst_port",
+        "bytes",
+        "packets",
+        "duration",
+        "flags",
+        "label"
+      ]
+    }
+  },
+  "features": {
+    "extract_flow_stats": true,
+    "extract_packet_stats": true,
+    "extract_protocol_features": true,
+    "time_window_sec": 60
+  },
+  "logging": {
+    "level": "info",
+    "file": "/app/logs/parser.log",
+    "max_size_mb": 100,
+    "max_files": 5
+  }
+}
