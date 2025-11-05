@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_executable(parser
     src/main.cpp
     src/PacketParser.cpp
-    src/TimeBasedCsvWriter.cpp
+    src/UnifiedWriter.cpp
     src/protocols/BaseProtocolParser.cpp
     src/protocols/ModbusParser.cpp
     src/protocols/S7CommParser.cpp
@@ -30,7 +30,6 @@ add_executable(parser
 # --- 플랫폼에 따라 pcap 라이브러리 찾기 ---
 if(WIN32)
     # Windows (Npcap/WinPcap SDK)
-    # Npcap SDK 설치 경로를 자동으로 찾거나, 환경 변수(NPCAP_SDK_PATH)를 통해 찾습니다.
     find_path(PCAP_INCLUDE_DIR pcap.h
         HINTS
             "$ENV{NPCAP_SDK_PATH}/Include"
@@ -41,7 +40,6 @@ if(WIN32)
             "$ENV{NPCAP_SDK_PATH}/Lib/x64"
             "C:/Program Files/Npcap-SDK/Lib/x64"
     )
-    # Windows 소켓 라이브러리 추가
     target_link_libraries(parser PRIVATE ${PCAP_LIBRARY} ws2_32)
 else()
     # macOS / Linux
