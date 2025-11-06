@@ -1,10 +1,14 @@
 #include "ArpParser.h"
+#include "../UnifiedWriter.h"  // ← 추가!
 #include "../network/network_headers.h"
-
-#include "ArpParser.h"
-#include "../network/network_headers.h"
-#include "../include/nlohmann/json.hpp"
 #include <sstream>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 
 ArpParser::ArpParser() {}
 ArpParser::~ArpParser() {}
@@ -13,15 +17,8 @@ std::string ArpParser::getName() const {
     return "arp";
 }
 
-// ARP 패킷은 이더넷 타입(0x0806)으로 식별되므로, 
-// PacketParser의 메인 로직에서 직접 이 파서를 호출합니다.
-// 따라서 isProtocol은 항상 false를 반환하여 다른 TCP/UDP 기반 파서와 혼동되지 않게 합니다.
 bool ArpParser::isProtocol(const PacketInfo& info) const {
     return info.eth_type == 0x0806;
-}
-
-void ArpParser::writeCsvHeader(std::ofstream& csv_stream) {
-    csv_stream << "@timestamp,dir,op,smac,sip,tmac,tip\n";
 }
 
 void ArpParser::parse(const PacketInfo& info) {
@@ -40,27 +37,19 @@ void ArpParser::parse(const PacketInfo& info) {
 
     std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
 
-    // JSONL 쓰기
-    if (m_json_stream && m_json_stream->is_open()) {
-        nlohmann::json details;
-        details["op"] = op_code;
-        details["smac"] = sha_str;
-        details["sip"] = spa_str;
-        details["tmac"] = tha_str;
-        details["tip"] = tpa_str;
-        writeJsonl(info, direction, details.dump());
-    }
-
-    // CSV 쓰기
-    if (m_csv_stream && m_csv_stream->is_open()) {
-        std::stringstream csv_line;
-        csv_line << info.timestamp << ","
-                 << direction << ","
-                 << op_code << ","
-                 << sha_str << ","
-                 << spa_str << ","
-                 << tha_str << ","
-                 << tpa_str << "\n";
-        *m_csv_stream << csv_line.str();
-    }
+    UnifiedRecord record = createUnifiedRecord(info, direction);
+    
+    record.arp_op = std::to_string(op_code);
+    record.arp_tmac = tha_str;
+    record.arp_tip = tpa_str;
+    
+    std::stringstream details_ss;
+    details_ss << R"({"op":)" << op_code 
+               << R"(,"smac":")" << sha_str << R"(",)"
+               << R"("sip":")" << spa_str << R"(",)"
+               << R"("tmac":")" << tha_str << R"(",)"
+               << R"("tip":")" << tpa_str << R"("})";
+    record.details_json = details_ss.str();
+    
+    addUnifiedRecord(record);
 }

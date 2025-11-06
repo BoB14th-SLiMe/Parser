@@ -2,11 +2,16 @@
 #define BASE_PROTOCOL_PARSER_H
 
 #include "IProtocolParser.h"
-#include "../UnifiedWriter.h"
+#include <string>
+#include <fstream>
+
+// Forward declaration
+class UnifiedWriter;
+struct UnifiedRecord;
 
 class BaseProtocolParser : public IProtocolParser {
 public:
-    ~BaseProtocolParser() override;
+    virtual ~BaseProtocolParser();
 
     static std::string mac_to_string(const uint8_t* mac);
     
@@ -14,7 +19,9 @@ public:
         m_unified_writer = writer;
     }
 
-    bool isProtocol(const PacketInfo& info) const override { return false; }
+    bool isProtocol(const PacketInfo& info) const override { 
+        return false; 
+    }
 
 protected:
     // UnifiedRecord 생성 헬퍼 함수
