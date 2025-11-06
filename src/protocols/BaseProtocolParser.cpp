@@ -1,4 +1,5 @@
 #include "BaseProtocolParser.h"
+#include "../UnifiedWriter.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -15,6 +16,7 @@ std::string BaseProtocolParser::mac_to_string(const uint8_t* mac) {
 BaseProtocolParser::~BaseProtocolParser() {}
 
 std::string BaseProtocolParser::escape_csv(const std::string& s) {
+    if (s.empty()) return "";
     if (s.find_first_of(",\"\n") == std::string::npos) {
         return s;
     }

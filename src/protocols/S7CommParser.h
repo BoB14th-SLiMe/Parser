@@ -2,17 +2,13 @@
 #define S7COMM_PARSER_H
 
 #include "BaseProtocolParser.h"
-#include "../AssetManager.h" // AssetManager 헤더 포함
+#include "../AssetManager.h"
 #include <chrono>
 #include <vector>
 #include <map>
 
-// S7comm 아이템 구조체 (요청 파싱 시 사용)
-struct S7CommItem {
-    // (내용 생략)
-};
+struct S7CommItem {};
 
-// S7comm 요청 정보 구조체
 struct S7CommRequestInfo {
     uint16_t pdu_ref = 0;
     uint8_t function_code = 0;
@@ -28,8 +24,6 @@ public:
     std::string getName() const override;
     bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
-
-    void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
     AssetManager& m_assetManager;

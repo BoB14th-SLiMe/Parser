@@ -1,4 +1,5 @@
 #include "S7CommParser.h"
+#include "../UnifiedWriter.h"  // ← 추가!
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -6,211 +7,39 @@
 #include <string>
 #include <algorithm>
 
-// 생성자
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
+
 S7CommParser::S7CommParser(AssetManager& assetManager)
     : m_assetManager(assetManager) {}
 
 S7CommParser::~S7CommParser() {}
 
-// --- Helper Functions ---
 static uint16_t safe_ntohs(const u_char* ptr) {
     uint16_t val_n;
     memcpy(&val_n, ptr, 2);
     return ntohs(val_n);
 }
+
 static uint32_t s7_addr_to_int(const u_char* ptr) {
-    // S7 주소는 3바이트 Big Endian (예: 0x84 0x00 0x0A -> DB 0, Byte 1, Bit 2)
     return (ptr[0] << 16) | (ptr[1] << 8) | ptr[2];
 }
 
-// --- (신규) CSV 출력을 위한 구조체 ---
-struct S7ParamItem {
-    std::string syn, tsz, amt, db, ar, addr;
-};
-struct S7DataItem {
-    std::string rc, len;
-};
-struct S7ParsedData {
-    std::string ros;
-    std::string fn;
-    std::string ic;
-    std::vector<S7ParamItem> param_items;
-    std::vector<S7DataItem> data_items;
-};
-
-
-// --- (신규) CSV 출력을 위한 구조적 PDU 파서 ---
-S7ParsedData parse_s7_pdu_structured(const u_char* s7pdu, int s7pdu_len, const S7CommRequestInfo* req_info) {
-    S7ParsedData data;
-    if (s7pdu_len < 10) return data;
-
-    uint8_t rosctr = s7pdu[1];
-    data.ros = std::to_string(rosctr);
-    uint16_t param_len = safe_ntohs(s7pdu + 6);
-    uint16_t data_len = safe_ntohs(s7pdu + 8);
-    int header_size = (rosctr == 0x01 || rosctr == 0x07) ? 10 : 12; // 0x07=Ack_Data
-
-    if (param_len > 0 && (s7pdu_len >= header_size + param_len)) {
-        const u_char* param = s7pdu + header_size;
-        data.fn = std::to_string(param[0]);
-        if ((param[0] == 0x04 || param[0] == 0x05) && param_len >= 2) { // Read/Write Var
-            uint8_t item_count = param[1];
-            data.ic = std::to_string(item_count);
-            const u_char* item_ptr = param + 2;
-            for(int i = 0; i < item_count; ++i) {
-                if ((item_ptr + 12) > (param + param_len)) break;
-                
-                S7ParamItem item;
-                item.syn = std::to_string(item_ptr[2]);
-                item.tsz = std::to_string(item_ptr[3]); // Transport Size
-                item.amt = std::to_string(safe_ntohs(item_ptr + 4)); // Amount
-                item.ar = std::to_string(item_ptr[8]); // Area
-                if (item_ptr[8] == 0x84) { // Area: Data blocks (DB)
-                    item.db = std::to_string(safe_ntohs(item_ptr + 6));
-                }
-                // 주소: 3바이트 Big Endian, 마지막 3비트는 비트 주소이므로 시프트
-                item.addr = std::to_string(s7_addr_to_int(item_ptr + 9) >> 3); 
-                
-                data.param_items.push_back(item);
-                item_ptr += 12;
-            }
-        }
-    }
-
-    if (data_len > 0 && (s7pdu_len >= header_size + param_len + data_len)) {
-        const u_char* data_ptr = s7pdu + header_size + param_len;
-        
-        // Read Response (rosctr=3)이고, 매칭되는 요청(req_info)이 있을 때
-        if (rosctr == 3 && req_info && !req_info->items.empty()) {
-            const u_char* data_item_ptr = data_ptr;
-            for(size_t i = 0; i < req_info->items.size(); ++i) {
-                if ((data_item_ptr + 1) > (data_ptr + data_len)) break; 
-                
-                S7DataItem item;
-                item.rc = std::to_string(data_item_ptr[0]); // Return Code
-                
-                if (data_item_ptr[0] == 0xff) { // Data follows
-                    if ((data_item_ptr + 4) > (data_ptr + data_len)) { // 헤더가 충분하지 않음
-                         data_item_ptr++; // 다음 아이템으로 (에러지만)
-                         continue;
-                    }
-                    uint16_t read_len_bits = safe_ntohs(data_item_ptr + 2);
-                    uint16_t read_len_bytes = (read_len_bits + 7) / 8; // 비트를 바이트로 올림
-                    item.len = std::to_string(read_len_bytes);
-                    
-                     if((data_item_ptr + 4 + read_len_bytes) <= (data_ptr + data_len)) {
-                         data_item_ptr += 4 + read_len_bytes;
-                         // S7은 홀수 바이트 데이터 뒤에 0x00 패딩을 추가함
-                         if (read_len_bytes % 2 != 0) data_item_ptr++; 
-                     } else { 
-                         data_item_ptr += 4; // 데이터가 잘렸지만 다음 아이템으로
-                     }
-                } else { // No data (e.g., error code)
-                    data_item_ptr++; 
-                }
-                data.data_items.push_back(item);
-            }
-        }
-    }
-    return data;
+std::string S7CommParser::getName() const { 
+    return "s7comm"; 
 }
-
-
-// --- (기존) JSONL 출력을 위한 PDU 파서 (이름 변경) ---
-std::string parse_s7_pdu_json(const u_char* s7pdu, int s7pdu_len, const S7CommRequestInfo* req_info) {
-    if (s7pdu_len < 10) return "{}";
-    std::stringstream ss;
-    ss << "{";
-    uint8_t rosctr = s7pdu[1];
-    uint16_t param_len = safe_ntohs(s7pdu + 6);
-    uint16_t data_len = safe_ntohs(s7pdu + 8);
-    int header_size = (rosctr == 0x01 || rosctr == 0x07) ? 10 : 12;
-
-    ss << "\"ros\":" << (int)rosctr;
-
-    if (param_len > 0 && (s7pdu_len >= header_size + param_len)) {
-        const u_char* param = s7pdu + header_size;
-        ss << ",\"prm\":{\"fn\":" << (int)param[0];
-        if ((param[0] == 0x04 || param[0] == 0x05) && param_len >= 2) {
-            uint8_t item_count = param[1];
-            ss << ",\"ic\":" << (int)item_count << ",\"itms\":[";
-            const u_char* item_ptr = param + 2;
-            for(int i = 0; i < item_count; ++i) {
-                if ((item_ptr + 12) > (param + param_len)) break;
-                
-                uint8_t area = item_ptr[8];
-                ss << (i > 0 ? "," : "") << "{";
-                ss << "\"syn\":" << (int)item_ptr[2];
-                ss << ",\"tsz\":" << (int)item_ptr[3];
-                ss << ",\"amt\":" << safe_ntohs(item_ptr + 4);
-                if (area == 0x84) { // Area: Data blocks (DB)
-                    ss << ",\"db\":" << safe_ntohs(item_ptr + 6);
-                }
-                ss << ",\"ar\":" << (int)area;
-                ss << ",\"addr\":" << (s7_addr_to_int(item_ptr + 9) >> 3);
-                ss << "}";
-
-                item_ptr += 12;
-            }
-            ss << "]";
-        }
-        ss << "}";
-    }
-
-    if (data_len > 0 && (s7pdu_len >= header_size + param_len + data_len)) {
-        const u_char* data = s7pdu + header_size + param_len;
-        ss << ",\"dat\":{";
-        if (rosctr == 3 && req_info && !req_info->items.empty()) {
-            ss << "\"itms\":[";
-            const u_char* data_item_ptr = data;
-            for(size_t i = 0; i < req_info->items.size(); ++i) {
-                if ((data_item_ptr + 1) > (data + data_len)) break; 
-                ss << (i > 0 ? "," : "") << "{\"rc\":" << (int)data_item_ptr[0];
-                if (data_item_ptr[0] == 0xff) {
-                    if ((data_item_ptr + 4) > (data + data_len)) {
-                         ss << "}";
-                         data_item_ptr++;
-                         continue;
-                    }
-                    uint16_t read_len_bits = safe_ntohs(data_item_ptr + 2);
-                    uint16_t read_len_bytes = (read_len_bits + 7) / 8;
-                    ss << ",\"len\":" << read_len_bytes;
-                     if((data_item_ptr + 4 + read_len_bytes) <= (data + data_len)) {
-                         data_item_ptr += 4 + read_len_bytes;
-                         if (read_len_bytes % 2 != 0) data_item_ptr++;
-                     } else { data_item_ptr +=4; }
-                } else { data_item_ptr++; }
-                ss << "}";
-            }
-             ss << "]";
-        }
-        ss << "}";
-    }
-    ss << "}";
-    return ss.str();
-}
-
-// --- IProtocolParser Interface Implementation ---
-std::string S7CommParser::getName() const { return "s7comm"; }
-
-// --- 수정: S7Comm용 CSV 헤더에 description 추가 ---
-void S7CommParser::writeCsvHeader(std::ofstream& csv_stream) {
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
-               << "prid,pdu.ros,pdu.prm.fn,pdu.prm.ic,"
-               << "pdu.prm.itms.syn,pdu.prm.itms.tsz,pdu.prm.itms.amt,pdu.prm.itms.db,pdu.prm.itms.ar,pdu.prm.itms.addr,"
-               << "pdu.dat.itms.rc,pdu.dat.itms.len,description\n";
-}
-
 
 bool S7CommParser::isProtocol(const PacketInfo& info) const {
-    // S7Comm은 TCP 프로토콜을 사용하고 포트 102를 사용합니다.
-    // 또한, TPKT, COTP, S7Comm 헤더의 특정 필드를 확인합니다.
-    return info.protocol == IPPROTO_TCP &&
+    return info.protocol == 6 &&  // TCP
            (info.dst_port == 102 || info.src_port == 102) &&
            info.payload_size >= 17 &&
-           info.payload[0] == 0x03 && // TPKT Version
-           info.payload[5] == 0xf0 && // COTP PDU Type (CR - Connection Request)
-           info.payload[7] == 0x32;   // S7Comm Protocol ID
+           info.payload[0] == 0x03 &&
+           info.payload[5] == 0xf0 &&
+           info.payload[7] == 0x32;
 }
 
 void S7CommParser::parse(const PacketInfo& info) {
@@ -220,79 +49,154 @@ void S7CommParser::parse(const PacketInfo& info) {
 
     uint16_t pdu_ref = safe_ntohs(s7_pdu + 4);
     uint8_t rosctr = s7_pdu[1];
+    uint16_t param_len = safe_ntohs(s7_pdu + 6);
+    uint16_t data_len = safe_ntohs(s7_pdu + 8);
+    int header_size = (rosctr == 0x01 || rosctr == 0x07) ? 10 : 12;
 
-    std::string pdu_json;
     std::string direction;
     S7CommRequestInfo* req_info_ptr = nullptr;
 
     if ((rosctr == 0x02 || rosctr == 0x03) && m_pending_requests[info.flow_id].count(pdu_ref)) {
         direction = "response";
         req_info_ptr = &m_pending_requests[info.flow_id][pdu_ref];
-    } else if (rosctr == 0x01) { // Job
+    } else if (rosctr == 0x01) {
         direction = "request";
         S7CommRequestInfo new_req;
         new_req.timestamp = std::chrono::steady_clock::now();
         new_req.pdu_ref = pdu_ref;
-        uint16_t param_len = safe_ntohs(s7_pdu + 6);
+        
         if (param_len > 0 && (s7_pdu_len >= 10 + param_len)) {
             const u_char* param = s7_pdu + 10;
             new_req.function_code = param[0];
-            if ((new_req.function_code == 0x04 || new_req.function_code == 0x05) && param_len >=2) { // Read/Write Var
+            if ((new_req.function_code == 0x04 || new_req.function_code == 0x05) && param_len >= 2) {
                 uint8_t item_count = param[1];
-                new_req.items.resize(item_count); // 응답 파싱을 위해 아이템 개수만 저장
+                new_req.items.resize(item_count);
             }
         }
         m_pending_requests[info.flow_id][pdu_ref] = new_req;
-        req_info_ptr = &m_pending_requests[info.flow_id][pdu_ref]; // 요청 정보도 파싱을 위해 전달
+        req_info_ptr = &m_pending_requests[info.flow_id][pdu_ref];
     } else {
-        return; // Not a job or a mapped response
+        return;
     }
 
-    // --- 1. JSONL 파일 쓰기 (기존 'd' 구조 유지) ---
-    pdu_json = parse_s7_pdu_json(s7_pdu, s7_pdu_len, (direction == "response") ? req_info_ptr : nullptr);
-    std::stringstream details_ss_json;
-    details_ss_json << R"({"prid":)" << pdu_ref << R"(,"pdu":)" << pdu_json << R"(})";
-    writeJsonl(info, direction, details_ss_json.str());
+    UnifiedRecord record = createUnifiedRecord(info, direction);
+    
+    record.s7_prid = std::to_string(pdu_ref);
+    record.s7_ros = std::to_string(rosctr);
 
-    // --- 2. CSV 파일 쓰기 ---
-    S7ParsedData csv_data = parse_s7_pdu_structured(s7_pdu, s7_pdu_len, (direction == "response") ? req_info_ptr : nullptr);
-    if (m_csv_stream && m_csv_stream->is_open()) {
-        // 요청/응답의 각 아이템을 별도 라인으로 작성
-        if (!csv_data.param_items.empty()) {
-            for (size_t i = 0; i < csv_data.param_items.size(); ++i) {
-                const auto& p_item = csv_data.param_items[i];
-                const S7DataItem* d_item = (i < csv_data.data_items.size()) ? &csv_data.data_items[i] : nullptr;
+    std::stringstream details_ss;
+    details_ss << R"({"prid":)" << pdu_ref << R"(,"pdu":{"ros":)" << (int)rosctr;
 
-                std::string translated_addr = m_assetManager.translateS7Address(p_item.ar, p_item.db, p_item.addr);
-                std::string description = m_assetManager.getDescription(translated_addr);
-
-                *m_csv_stream << info.timestamp << ","
-                              << info.src_mac << "," << info.dst_mac << ","
-                              << info.src_ip << "," << info.src_port << ","
-                              << info.dst_ip << "," << info.dst_port << ","
-                              << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
-                              << direction << ","
-                              << pdu_ref << "," << csv_data.ros << "," << csv_data.fn << "," << csv_data.ic << ","
-                              << p_item.syn << "," << p_item.tsz << "," << p_item.amt << "," << p_item.db << "," << p_item.ar << "," << p_item.addr << ","
-                              << (d_item ? d_item->rc : "") << "," << (d_item ? d_item->len : "") << ","
-                              << escape_csv(description) << "\n";
+    if (param_len > 0 && (s7_pdu_len >= header_size + param_len)) {
+        const u_char* param = s7_pdu + header_size;
+        record.s7_fn = std::to_string(param[0]);
+        details_ss << R"(,"prm":{"fn":)" << (int)param[0];
+        
+        if ((param[0] == 0x04 || param[0] == 0x05) && param_len >= 2) {
+            uint8_t item_count = param[1];
+            record.s7_ic = std::to_string(item_count);
+            details_ss << R"(,"ic":)" << (int)item_count << R"(,"itms":[)";
+            
+            const u_char* item_ptr = param + 2;
+            for(int i = 0; i < item_count; ++i) {
+                if ((item_ptr + 12) > (param + param_len)) break;
+                
+                if (i > 0) details_ss << ",";
+                
+                uint8_t area = item_ptr[8];
+                uint16_t db_num = 0;
+                if (area == 0x84) {
+                    db_num = safe_ntohs(item_ptr + 6);
+                }
+                uint32_t addr = s7_addr_to_int(item_ptr + 9) >> 3;
+                
+                if (i == 0) {
+                    record.s7_syn = std::to_string(item_ptr[2]);
+                    record.s7_tsz = std::to_string(item_ptr[3]);
+                    record.s7_amt = std::to_string(safe_ntohs(item_ptr + 4));
+                    record.s7_ar = std::to_string(area);
+                    record.s7_addr = std::to_string(addr);
+                    if (area == 0x84) {
+                        record.s7_db = std::to_string(db_num);
+                    }
+                    
+                    std::string translated_addr = m_assetManager.translateS7Address(
+                        record.s7_ar, record.s7_db, record.s7_addr);
+                    record.s7_description = m_assetManager.getDescription(translated_addr);
+                }
+                
+                details_ss << R"({"syn":)" << (int)item_ptr[2]
+                          << R"(,"tsz":)" << (int)item_ptr[3]
+                          << R"(,"amt":)" << safe_ntohs(item_ptr + 4);
+                if (area == 0x84) {
+                    details_ss << R"(,"db":)" << db_num;
+                }
+                details_ss << R"(,"ar":)" << (int)area
+                          << R"(,"addr":)" << addr << "}";
+                
+                item_ptr += 12;
             }
-        } else {
-            // 아이템이 없는 경우 (예: Job Setup)
-            *m_csv_stream << info.timestamp << ","
-                          << info.src_mac << "," << info.dst_mac << ","
-                          << info.src_ip << "," << info.src_port << ","
-                          << info.dst_ip << "," << info.dst_port << ","
-                          << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
-                          << direction << ","
-                          << pdu_ref << "," << csv_data.ros << "," << csv_data.fn << "," << csv_data.ic << ","
-                          << "" << "," << "" << "," << "" << "," << "" << "," << "" << "," << "" << "," // param_items
-                          << "" << "," << "" << "," // data_items
-                          << "" << "\n"; // description
+            details_ss << "]";
         }
+        details_ss << "}";
     }
 
-    // 요청-응답 매핑 정리
+    if (data_len > 0 && (s7_pdu_len >= header_size + param_len + data_len)) {
+        const u_char* data_ptr = s7_pdu + header_size + param_len;
+        details_ss << R"(,"dat":{)";
+        
+        if (rosctr == 3 && req_info_ptr && !req_info_ptr->items.empty()) {
+            details_ss << R"("itms":[)";
+            const u_char* data_item_ptr = data_ptr;
+            
+            for(size_t i = 0; i < req_info_ptr->items.size(); ++i) {
+                if ((data_item_ptr + 1) > (data_ptr + data_len)) break;
+                
+                if (i > 0) details_ss << ",";
+                
+                uint8_t return_code = data_item_ptr[0];
+                details_ss << R"({"rc":)" << (int)return_code;
+                
+                if (i == 0) {
+                    record.s7_rc = std::to_string(return_code);
+                }
+                
+                if (return_code == 0xff) {
+                    if ((data_item_ptr + 4) > (data_ptr + data_len)) {
+                        details_ss << "}";
+                        data_item_ptr++;
+                        continue;
+                    }
+                    uint16_t read_len_bits = safe_ntohs(data_item_ptr + 2);
+                    uint16_t read_len_bytes = (read_len_bits + 7) / 8;
+                    
+                    if (i == 0) {
+                        record.s7_len = std::to_string(read_len_bytes);
+                    }
+                    
+                    details_ss << R"(,"len":)" << read_len_bytes;
+                    
+                    if((data_item_ptr + 4 + read_len_bytes) <= (data_ptr + data_len)) {
+                        data_item_ptr += 4 + read_len_bytes;
+                        if (read_len_bytes % 2 != 0) data_item_ptr++;
+                    } else {
+                        data_item_ptr += 4;
+                    }
+                } else {
+                    data_item_ptr++;
+                }
+                details_ss << "}";
+            }
+            details_ss << "]";
+        }
+        details_ss << "}";
+    }
+
+    details_ss << "}}";
+    record.details_json = details_ss.str();
+    
+    addUnifiedRecord(record);
+
     if (direction == "response") {
         m_pending_requests[info.flow_id].erase(pdu_ref);
     }

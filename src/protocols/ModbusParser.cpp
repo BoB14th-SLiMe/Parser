@@ -1,11 +1,18 @@
 #include "ModbusParser.h"
+#include "../UnifiedWriter.h"  // UnifiedRecord 정의를 위해 필요!
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <vector>
 #include <string>
-#include <stdexcept>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 
 ModbusParser::ModbusParser(AssetManager& assetManager)
     : m_assetManager(assetManager) {}
@@ -18,198 +25,12 @@ static uint16_t safe_ntohs(const u_char* ptr) {
     return ntohs(val_n);
 }
 
-struct ModbusRegister {
-    std::string addr;
-    std::string val;
-};
-
-struct ModbusParsedData {
-    std::string fc;
-    std::string err;
-    std::string bc;
-    std::string addr;
-    std::string qty;
-    std::string val;
-    std::vector<ModbusRegister> regs;
-};
-
-ModbusParsedData parse_modbus_pdu_structured(const u_char* pdu, int pdu_len, bool is_response, const ModbusRequestInfo* req_info) {
-    ModbusParsedData data;
-    if (pdu_len < 1) return data;
-    
-    uint8_t function_code = pdu[0];
-    const u_char* pdu_data = pdu + 1;
-    int data_len = pdu_len - 1;
-
-    data.fc = std::to_string(function_code & 0x7F);
-
-    if (function_code & 0x80) {
-        if (data_len >= 1) {
-            data.err = std::to_string(pdu_data[0]);
-        }
-    } else {
-        switch (function_code) {
-            case 1: case 2:
-            case 3: case 4: {
-                if (is_response) {
-                    if (data_len >= 1) {
-                        uint8_t byte_count = pdu_data[0];
-                        data.bc = std::to_string(byte_count);
-                        
-                        // Response는 항상 레지스터 값을 파싱 시도
-                        if (byte_count > 0 && data_len >= (1 + byte_count)) {
-                            const u_char* reg_data = pdu_data + 1;
-                            int num_registers = byte_count / 2;
-                            
-                            // req_info가 있으면 start_address 사용, 없으면 0부터 시작
-                            uint16_t start_addr = req_info ? req_info->start_address : 0;
-                            
-                            for (int i = 0; i < num_registers; ++i) {
-                                uint16_t reg_value = safe_ntohs(reg_data + (i * 2));
-                                uint16_t reg_addr = start_addr + i;  // 명시적으로 계산
-                                data.regs.push_back({
-                                    std::to_string(reg_addr),
-                                    std::to_string(reg_value)
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    if (data_len >= 4) {
-                        uint16_t start_addr = safe_ntohs(pdu_data);
-                        uint16_t quantity = safe_ntohs(pdu_data + 2);
-                        data.addr = std::to_string(start_addr);
-                        data.qty = std::to_string(quantity);
-                    }
-                }
-                break;
-            }
-            case 5: case 6: {
-                if (data_len >= 4) {
-                    data.addr = std::to_string(safe_ntohs(pdu_data));
-                    data.val = std::to_string(safe_ntohs(pdu_data + 2));
-                }
-                break;
-            }
-            case 15: case 16: {
-                if (is_response) {
-                    if (data_len >= 4) {
-                        data.addr = std::to_string(safe_ntohs(pdu_data));
-                        data.qty = std::to_string(safe_ntohs(pdu_data + 2));
-                    }
-                } else {
-                    if (data_len >= 5) {
-                        data.addr = std::to_string(safe_ntohs(pdu_data));
-                        data.qty = std::to_string(safe_ntohs(pdu_data + 2));
-                        data.bc = std::to_string(pdu_data[4]);
-                    }
-                }
-                break;
-            }
-        }
-    }
-    return data;
-}
-
-std::string parse_modbus_pdu_json(const u_char* pdu, int pdu_len, bool is_response, const ModbusRequestInfo* req_info) {
-    if (pdu_len < 1) return "{}";
-    
-    uint8_t function_code = pdu[0];
-    const u_char* data = pdu + 1;
-    int data_len = pdu_len - 1;
-
-    std::stringstream ss;
-    ss << "{";
-    ss << "\"fc\":" << (int)(function_code & 0x7F);
-
-    if (function_code & 0x80) {
-        if (data_len >= 1) ss << ",\"err\":" << (int)data[0];
-    } else {
-        switch (function_code) {
-            case 1: case 2:
-            case 3: case 4: {
-                if (is_response) {
-                    if (data_len >= 1) {
-                        uint8_t byte_count = data[0];
-                        ss << ",\"bc\":" << (int)byte_count;
-                        if (byte_count > 0 && data_len >= (1 + byte_count)) {
-                            ss << ",\"regs\":{";
-                            const u_char* reg_data = data + 1;
-                            int num_registers = byte_count / 2;
-                            uint16_t start_addr = req_info ? req_info->start_address : 0;
-                            for (int i = 0; i < num_registers; ++i) {
-                                if (i > 0) ss << ",";
-                                uint16_t reg_addr = start_addr + i;  // 명시적으로 계산
-                                ss << "\"" << reg_addr << "\":"
-                                   << safe_ntohs(reg_data + i * 2);
-                            }
-                            ss << "}";
-                        }
-                    }
-                } else {
-                    if (data_len >= 4) {
-                        ss << ",\"addr\":" << safe_ntohs(data)
-                           << ",\"qty\":" << safe_ntohs(data + 2);
-                    }
-                }
-                break;
-            }
-            case 5: case 6: {
-                if (data_len >= 4) {
-                    ss << ",\"addr\":" << safe_ntohs(data)
-                       << ",\"val\":" << safe_ntohs(data + 2);
-                }
-                break;
-            }
-            case 15: case 16: {
-                if (is_response) {
-                    if (data_len >= 4) {
-                        ss << ",\"addr\":" << safe_ntohs(data)
-                           << ",\"qty\":" << safe_ntohs(data + 2);
-                    }
-                } else {
-                    if (data_len >= 5) {
-                        ss << ",\"addr\":" << safe_ntohs(data)
-                           << ",\"qty\":" << safe_ntohs(data + 2)
-                           << ",\"bc\":" << (int)data[4];
-                    }
-                }
-                break;
-            }
-        }
-    }
-    ss << "}";
-    return ss.str();
-}
-
-long getModbusOffset(const std::string& fc_str) {
-    if (fc_str.empty()) return 0;
-    try {
-        int fc = std::stoi(fc_str);
-        switch (fc) {
-            case 0: return 1;
-            case 1: return 10001;
-            case 3: return 30001;
-            case 4: return 40001;
-            default: return 0;
-        }
-    } catch (const std::exception& e) {
-        return 0;
-    }
-}
-
 std::string ModbusParser::getName() const { 
     return "modbus_tcp"; 
 }
 
-void ModbusParser::writeCsvHeader(std::ofstream& csv_stream) {
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
-               << "tid,pdu.fc,pdu.err,pdu.bc,pdu.addr,pdu.qty,pdu.val,"
-               << "pdu.regs.addr,pdu.regs.val,translated_addr,description\n";
-}
-
 bool ModbusParser::isProtocol(const PacketInfo& info) const {
-    return info.protocol == IPPROTO_TCP &&
+    return info.protocol == 6 &&  // IPPROTO_TCP = 6
            (info.dst_port == 502 || info.src_port == 502) &&
            info.payload_size >= 7 &&
            info.payload[2] == 0x00 &&
@@ -223,30 +44,23 @@ void ModbusParser::parse(const PacketInfo& info) {
     
     if (pdu_len < 1) return;
 
-    // 포트 기반으로 Request/Response 구분
     bool is_request = (info.dst_port == 502);
     bool is_response = (info.src_port == 502);
     
     std::string direction = is_request ? "request" : "response";
-    std::string pdu_json;
-    ModbusParsedData csv_data;
-    ModbusRequestInfo* req_info_ptr = nullptr;
-
-    // Flow 식별자 생성 (양방향 통신을 위해 클라이언트 포트 사용)
-    // Modbus에서는 클라이언트가 502가 아닌 포트를 사용하므로
-    // 502가 아닌 포트를 기준으로 flow를 식별
+    uint8_t current_fc = pdu[0] & 0x7F;
+    
+    // Flow 키 생성
     std::string flow_key;
     std::string client_ip, server_ip;
     uint16_t client_port, server_port;
     
     if (info.src_port == 502) {
-        // Response: src가 서버
         server_ip = info.src_ip;
         server_port = info.src_port;
         client_ip = info.dst_ip;
         client_port = info.dst_port;
     } else {
-        // Request: dst가 서버
         server_ip = info.dst_ip;
         server_port = info.dst_port;
         client_ip = info.src_ip;
@@ -256,24 +70,17 @@ void ModbusParser::parse(const PacketInfo& info) {
     flow_key = client_ip + ":" + std::to_string(client_port) + "->" + 
                server_ip + ":" + std::to_string(server_port);
 
-    // Transaction ID와 Function Code를 조합한 키 생성
-    uint8_t current_fc = pdu[0] & 0x7F;
     uint32_t req_key = (static_cast<uint32_t>(trans_id) << 8) | current_fc;
+    ModbusRequestInfo* req_info_ptr = nullptr;
     
     if (is_response) {
-        // Response: pending_requests에서 조회만 (삭제하지 않음)
         if (m_pending_requests[flow_key].count(req_key)) {
             req_info_ptr = &m_pending_requests[flow_key][req_key];
         }
-        
-        pdu_json = parse_modbus_pdu_json(pdu, pdu_len, true, req_info_ptr);
-        csv_data = parse_modbus_pdu_structured(pdu, pdu_len, true, req_info_ptr);
     } else {
-        // Request: 이전 요청이 있으면 덮어쓰기 (새로운 요청이 오면 이전 것은 완료된 것으로 간주)
         ModbusRequestInfo new_req;
         new_req.function_code = current_fc;
         
-        // Start address 저장 (FC 1-6, 15-16)
         if (pdu_len >= 3) {
             if ((new_req.function_code >= 1 && new_req.function_code <= 6) ||
                 (new_req.function_code == 15 || new_req.function_code == 16)) {
@@ -282,75 +89,124 @@ void ModbusParser::parse(const PacketInfo& info) {
         }
         
         m_pending_requests[flow_key][req_key] = new_req;
-        pdu_json = parse_modbus_pdu_json(pdu, pdu_len, false, nullptr);
-        csv_data = parse_modbus_pdu_structured(pdu, pdu_len, false, nullptr);
     }
     
-    // JSONL 파일 쓰기
-    std::stringstream details_ss_json;
-    details_ss_json << R"({"tid":)" << trans_id << R"(,"pdu":)" << pdu_json << R"(})";
-    writeJsonl(info, direction, details_ss_json.str());
-
-    // CSV 파일 쓰기
-    if (m_csv_stream && m_csv_stream->is_open()) {
-        if (!csv_data.regs.empty()) {
-            // 여러 레지스터: 각각 한 줄씩
-            for (const auto& reg : csv_data.regs) {
-                std::string translated_addr = m_assetManager.translateModbusAddress(
-                    csv_data.fc, 
-                    std::stoul(reg.addr)
-                );
-                std::string description = m_assetManager.getDescription(translated_addr);
-
-                std::stringstream ss;
-                ss << info.timestamp << ","
-                << info.src_mac << "," << info.dst_mac << ","
-                << info.src_ip << "," << info.src_port << ","
-                << info.dst_ip << "," << info.dst_port << ","
-                << info.tcp_seq << "," << info.tcp_ack << "," 
-                << (int)info.tcp_flags << ","
-                << direction << ","
-                << trans_id << ","
-                << csv_data.fc << "," << csv_data.err << "," 
-                << csv_data.bc << ","
-                << "" << "," << "" << "," << "" << ","
-                << reg.addr << "," << reg.val << ","
-                << escape_csv(translated_addr) << ","
-                << escape_csv(description) << "\n";
-                
-                writeCsvLineAndCapture(ss.str());  // 변경된 부분
+    // UnifiedRecord 생성
+    UnifiedRecord record = createUnifiedRecord(info, direction);
+    
+    // Modbus 필드 채우기
+    record.modbus_tid = std::to_string(trans_id);
+    record.modbus_fc = std::to_string(current_fc);
+    
+    // Function code별 파싱
+    if (pdu[0] & 0x80) {
+        // 에러 응답
+        if (pdu_len >= 2) {
+            record.modbus_err = std::to_string(pdu[1]);
+        }
+    } else {
+        switch (current_fc) {
+            case 1: case 2: case 3: case 4: {
+                if (is_response) {
+                    if (pdu_len >= 2) {
+                        uint8_t byte_count = pdu[1];
+                        record.modbus_bc = std::to_string(byte_count);
+                        
+                        if (byte_count > 0 && pdu_len >= (2 + byte_count)) {
+                            const u_char* reg_data = pdu + 2;
+                            int num_registers = byte_count / 2;
+                            uint16_t start_addr = req_info_ptr ? req_info_ptr->start_address : 0;
+                            
+                            // 각 레지스터를 개별 레코드로 생성
+                            for (int i = 0; i < num_registers; ++i) {
+                                UnifiedRecord reg_record = record;
+                                uint16_t reg_value = safe_ntohs(reg_data + (i * 2));
+                                uint16_t reg_addr = start_addr + i;
+                                
+                                reg_record.modbus_regs_addr = std::to_string(reg_addr);
+                                reg_record.modbus_regs_val = std::to_string(reg_value);
+                                
+                                std::string translated_addr = m_assetManager.translateModbusAddress(
+                                    record.modbus_fc, reg_addr);
+                                reg_record.modbus_translated_addr = translated_addr;
+                                reg_record.modbus_description = m_assetManager.getDescription(translated_addr);
+                                
+                                // JSON details
+                                std::stringstream details_ss;
+                                details_ss << R"({"tid":)" << trans_id 
+                                          << R"(,"pdu":{"fc":)" << (int)current_fc
+                                          << R"(,"bc":)" << (int)byte_count
+                                          << R"(,"regs":{")" << reg_addr << R"(":)" << reg_value << R"(}}})";
+                                reg_record.details_json = details_ss.str();
+                                
+                                addUnifiedRecord(reg_record);
+                            }
+                            return; // 이미 모든 레코드 추가됨
+                        }
+                    }
+                } else {
+                    if (pdu_len >= 5) {
+                        uint16_t start_addr = safe_ntohs(pdu + 1);
+                        uint16_t quantity = safe_ntohs(pdu + 3);
+                        record.modbus_addr = std::to_string(start_addr);
+                        record.modbus_qty = std::to_string(quantity);
+                    }
+                }
+                break;
             }
-        } else {
-            // 단일 값 또는 요청
-            std::string translated_addr = "";
-            std::string description = "";
-            
-            if (!csv_data.addr.empty()) {
-                translated_addr = m_assetManager.translateModbusAddress(
-                    csv_data.fc, 
-                    std::stoul(csv_data.addr)
-                );
-                description = m_assetManager.getDescription(translated_addr);
+            case 5: case 6: {
+                if (pdu_len >= 5) {
+                    record.modbus_addr = std::to_string(safe_ntohs(pdu + 1));
+                    record.modbus_val = std::to_string(safe_ntohs(pdu + 3));
+                }
+                break;
             }
-
-            std::stringstream ss;
-            ss << info.timestamp << ","
-            << info.src_mac << "," << info.dst_mac << ","
-            << info.src_ip << "," << info.src_port << ","
-            << info.dst_ip << "," << info.dst_port << ","
-            << info.tcp_seq << "," << info.tcp_ack << "," 
-            << (int)info.tcp_flags << ","
-            << direction << ","
-            << trans_id << ","
-            << csv_data.fc << "," << csv_data.err << "," 
-            << csv_data.bc << ","
-            << csv_data.addr << "," << csv_data.qty << "," 
-            << csv_data.val << ","
-            << "" << "," << "" << ","
-            << escape_csv(translated_addr) << ","
-            << escape_csv(description) << "\n";
-            
-            writeCsvLineAndCapture(ss.str());  // 변경된 부분
+            case 15: case 16: {
+                if (is_response) {
+                    if (pdu_len >= 5) {
+                        record.modbus_addr = std::to_string(safe_ntohs(pdu + 1));
+                        record.modbus_qty = std::to_string(safe_ntohs(pdu + 3));
+                    }
+                } else {
+                    if (pdu_len >= 6) {
+                        record.modbus_addr = std::to_string(safe_ntohs(pdu + 1));
+                        record.modbus_qty = std::to_string(safe_ntohs(pdu + 3));
+                        record.modbus_bc = std::to_string(pdu[5]);
+                    }
+                }
+                break;
+            }
         }
     }
+    
+    // Translated address 및 description
+    if (!record.modbus_addr.empty()) {
+        std::string translated_addr = m_assetManager.translateModbusAddress(
+            record.modbus_fc, std::stoul(record.modbus_addr));
+        record.modbus_translated_addr = translated_addr;
+        record.modbus_description = m_assetManager.getDescription(translated_addr);
+    }
+    
+    // JSON details 생성
+    std::stringstream details_ss;
+    details_ss << R"({"tid":)" << trans_id << R"(,"pdu":{"fc":)" << (int)current_fc;
+    if (!record.modbus_err.empty()) {
+        details_ss << R"(,"err":)" << record.modbus_err;
+    }
+    if (!record.modbus_bc.empty()) {
+        details_ss << R"(,"bc":)" << record.modbus_bc;
+    }
+    if (!record.modbus_addr.empty()) {
+        details_ss << R"(,"addr":)" << record.modbus_addr;
+    }
+    if (!record.modbus_qty.empty()) {
+        details_ss << R"(,"qty":)" << record.modbus_qty;
+    }
+    if (!record.modbus_val.empty()) {
+        details_ss << R"(,"val":)" << record.modbus_val;
+    }
+    details_ss << "}}";
+    record.details_json = details_ss.str();
+    
+    addUnifiedRecord(record);
 }

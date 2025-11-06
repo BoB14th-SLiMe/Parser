@@ -1,9 +1,10 @@
+// ===== IProtocolParser.h =====
 #ifndef IPROTOCOL_PARSER_H
 #define IPROTOCOL_PARSER_H
 
 #include <string>
 #include <vector>
-#include "pcap.h"
+#include <cstdint>
 
 // Forward declaration
 class UnifiedWriter;
@@ -23,7 +24,7 @@ struct PacketInfo {
     uint32_t tcp_seq = 0;
     uint32_t tcp_ack = 0;
     uint8_t tcp_flags = 0;
-    const u_char* payload = nullptr;
+    const unsigned char* payload = nullptr;
     int payload_size = 0;
 };
 

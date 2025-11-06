@@ -10,6 +10,7 @@
 
 // 통합 레코드 구조체
 struct UnifiedRecord {
+    // 공통 필드
     std::string timestamp;
     std::string protocol;
     std::string smac;
@@ -26,23 +27,27 @@ struct UnifiedRecord {
     // 프로토콜별 상세 정보 (JSON 형태)
     std::string details_json;
     
-    // 프로토콜별 CSV 필드
+    // ARP
     std::string arp_op;
     std::string arp_tmac;
     std::string arp_tip;
     
+    // DNS
     std::string dns_tid;
     std::string dns_fl;
     std::string dns_qc;
     std::string dns_ac;
     
+    // DNP3
     std::string dnp3_len;
     std::string dnp3_ctrl;
     std::string dnp3_dest;
     std::string dnp3_src;
     
+    // Generic/Unknown
     std::string len;
     
+    // Modbus TCP
     std::string modbus_tid;
     std::string modbus_fc;
     std::string modbus_err;
@@ -55,6 +60,7 @@ struct UnifiedRecord {
     std::string modbus_translated_addr;
     std::string modbus_description;
     
+    // S7Comm
     std::string s7_prid;
     std::string s7_ros;
     std::string s7_fn;
@@ -69,6 +75,7 @@ struct UnifiedRecord {
     std::string s7_len;
     std::string s7_description;
     
+    // XGT FEnet
     std::string xgt_prid;
     std::string xgt_companyId;
     std::string xgt_plcinfo;
