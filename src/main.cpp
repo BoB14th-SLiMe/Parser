@@ -104,7 +104,7 @@ int main(int argc, char* argv[]) {
     CaptureConfig config;
     config.interface = argv[1];
     config.filter = "";
-    config.rolling_interval_minutes = 30;
+    config.rolling_interval_minutes = 0;
     config.num_threads = 0;
     config.enable_redis = true;
     config.enable_elasticsearch = true;

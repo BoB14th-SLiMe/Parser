@@ -16,7 +16,7 @@
     "compression": "snappy"
   },
   "parser": {
-    "capture_interface": "eth0",
+    "capture_interface": "veth1",
     "buffer_size": 65536,
     "batch_size": 100,
     "flush_interval_ms": 1000
@@ -24,7 +24,7 @@
   "output": {
     "jsonl": {
       "enabled": true,
-      "output_dir": "/data/parser-output",
+      "output_dir": "/app/data/parser-output",
       "file_prefix": "packets",
       "rotation_size_mb": 100,
       "rotation_interval_min": 60,

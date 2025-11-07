@@ -13,7 +13,7 @@
 using json = nlohmann::json;
 
 struct ElasticsearchConfig {
-    std::string host = "localhost";
+    std::string host = "100.126.141.58";
     int port = 9200;
     std::string username = "";
     std::string password = "";
