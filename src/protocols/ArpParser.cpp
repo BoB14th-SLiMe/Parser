@@ -1,5 +1,5 @@
 #include "ArpParser.h"
-#include "../UnifiedWriter.h"  // ← 추가!
+#include "../UnifiedWriter.h"
 #include "../network/network_headers.h"
 #include <sstream>
 
@@ -22,7 +22,8 @@ bool ArpParser::isProtocol(const PacketInfo& info) const {
 }
 
 void ArpParser::parse(const PacketInfo& info) {
-    if (info.payload_size < sizeof(ARPHeader)) return;
+    // size_t로 캐스팅하여 signed/unsigned 비교 경고 제거
+    if (static_cast<size_t>(info.payload_size) < sizeof(ARPHeader)) return;
 
     const ARPHeader* arp_header = reinterpret_cast<const ARPHeader*>(info.payload);
 

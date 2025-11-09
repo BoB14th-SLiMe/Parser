@@ -18,22 +18,24 @@ public:
     void setUnifiedWriter(UnifiedWriter* writer) override {
         m_unified_writer = writer;
     }
+    
+    // 직접 백엔드 전송을 위한 콜백 설정
+    void setDirectBackendCallback(std::function<void(const UnifiedRecord&)> callback) {
+        m_direct_backend_callback = callback;
+    }
 
     bool isProtocol(const PacketInfo& info) const override { 
+        (void)info;
         return false; 
     }
 
 protected:
-    // UnifiedRecord 생성 헬퍼 함수
     UnifiedRecord createUnifiedRecord(const PacketInfo& info, const std::string& direction);
-    
-    // 레코드를 UnifiedWriter에 추가
     void addUnifiedRecord(const UnifiedRecord& record);
-    
-    // CSV 이스케이프 헬퍼
     std::string escape_csv(const std::string& s);
 
     UnifiedWriter* m_unified_writer = nullptr;
+    std::function<void(const UnifiedRecord&)> m_direct_backend_callback;  // 추가
 };
 
 #endif // BASE_PROTOCOL_PARSER_H

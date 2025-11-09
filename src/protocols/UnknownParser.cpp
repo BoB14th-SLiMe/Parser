@@ -1,5 +1,5 @@
 #include "UnknownParser.h"
-#include "../UnifiedWriter.h"  // ← 추가!
+#include "../UnifiedWriter.h"
 #include <sstream>
 
 UnknownParser::~UnknownParser() {}
@@ -9,6 +9,7 @@ std::string UnknownParser::getName() const {
 }
 
 bool UnknownParser::isProtocol(const PacketInfo& info) const {
+    (void)info;  // 경고 제거
     return true;
 }
 

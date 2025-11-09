@@ -1,5 +1,5 @@
 #include "TcpSessionParser.h"
-#include "../UnifiedWriter.h"  // ← 추가!
+#include "../UnifiedWriter.h"
 #include "../network/network_headers.h"
 #include <sstream>
 
@@ -11,6 +11,7 @@ std::string TcpSessionParser::getName() const {
 }
 
 bool TcpSessionParser::isProtocol(const PacketInfo& info) const {
+    (void)info;  // 경고 제거
     return true;
 }
 

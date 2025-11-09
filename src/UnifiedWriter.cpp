@@ -28,6 +28,11 @@ UnifiedWriter::~UnifiedWriter() {
 }
 
 std::string UnifiedWriter::getTimeSlot(const std::string& timestamp) {
+    // time_interval이 0이면 "all" 슬롯 사용
+    if (m_interval_minutes == 0) {
+        return "output_all";
+    }
+    
     // timestamp 형식: 2023-05-10T02:24:15.123456Z
     if (timestamp.length() < 19) {
         std::cout << "[WARN] Invalid timestamp format: " << timestamp << std::endl;
@@ -86,6 +91,11 @@ void UnifiedWriter::addRecord(const UnifiedRecord& record) {
     if (!time_slot.empty()) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_time_slots[time_slot].push_back(record);
+        
+        // 백엔드로 전송 (추가)
+        if (m_backend_callback) {
+            m_backend_callback(record);
+        }
     }
 }
 

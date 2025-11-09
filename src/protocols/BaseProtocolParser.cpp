@@ -50,7 +50,13 @@ UnifiedRecord BaseProtocolParser::createUnifiedRecord(const PacketInfo& info, co
 }
 
 void BaseProtocolParser::addUnifiedRecord(const UnifiedRecord& record) {
+    // 파일 출력
     if (m_unified_writer) {
         m_unified_writer->addRecord(record);
+    }
+    
+    // 또는 직접 백엔드 전송
+    if (m_direct_backend_callback) {
+        m_direct_backend_callback(record);
     }
 }

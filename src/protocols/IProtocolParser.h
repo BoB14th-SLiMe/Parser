@@ -1,15 +1,16 @@
-// ===== IProtocolParser.h =====
 #ifndef IPROTOCOL_PARSER_H
 #define IPROTOCOL_PARSER_H
 
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <functional>
 
 // Forward declaration
 class UnifiedWriter;
+struct UnifiedRecord;
 
-// Packet information structure passed to parsers
+// Packet information structure
 struct PacketInfo {
     std::string timestamp;
     std::string flow_id;
@@ -36,8 +37,8 @@ public:
     virtual bool isProtocol(const PacketInfo& info) const = 0;
     virtual void parse(const PacketInfo& info) = 0;
     
-    // UnifiedWriter 설정
     virtual void setUnifiedWriter(UnifiedWriter* writer) = 0;
+    virtual void setDirectBackendCallback(std::function<void(const UnifiedRecord&)> callback) = 0;
 };
 
 #endif // IPROTOCOL_PARSER_H
