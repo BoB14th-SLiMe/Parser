@@ -7,6 +7,7 @@
 #include <fstream>
 #include <mutex>
 #include <ctime>
+#include <functional>
 
 // 통합 레코드 구조체
 struct UnifiedRecord {
@@ -106,6 +107,11 @@ public:
     // 파일 플러시 및 로테이션
     void flush();
     
+    // 백엔드 전송 콜백 설정 (추가)
+    void setBackendCallback(std::function<void(const UnifiedRecord&)> callback) {
+        m_backend_callback = callback;
+    }
+
 private:
     std::string m_output_dir;
     int m_interval_minutes;
@@ -113,6 +119,9 @@ private:
     // 시간 슬롯별로 레코드 저장
     std::map<std::string, std::vector<UnifiedRecord>> m_time_slots;
     std::mutex m_mutex;
+    
+    // 백엔드 전송 콜백 (추가)
+    std::function<void(const UnifiedRecord&)> m_backend_callback;
     
     // 타임스탬프로부터 시간 슬롯 계산
     std::string getTimeSlot(const std::string& timestamp);

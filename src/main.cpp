@@ -44,20 +44,22 @@ void print_usage(const char* program_name) {
     std::cerr << "Options:" << std::endl;
     std::cerr << "  -f <pcap_file>     : Parse existing pcap file (offline mode)" << std::endl;
     std::cerr << "  -i <interface>     : Capture from network interface (live mode)" << std::endl;
-    std::cerr << "  -t <minutes>       : Time interval for file rotation (default: 30)" << std::endl;
+    std::cerr << "  -t <minutes>       : Time interval for file rotation (default: 0=all)" << std::endl;
     std::cerr << "  -n <threads>       : Number of worker threads (default: auto)" << std::endl;
     std::cerr << "  -o <output_dir>    : Output directory (default: output)" << std::endl;
+    std::cerr << "  -r, --realtime     : Enable realtime mode (no file output)" << std::endl;
+    std::cerr << "  --with-files       : Save files in realtime mode (for backup)" << std::endl;
     std::cerr << "  -h                 : Show this help message" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Examples:" << std::endl;
-    std::cerr << "  # Live capture mode (30 minute intervals)" << std::endl;
-    std::cerr << "  " << program_name << " -i eth0" << std::endl;
+    std::cerr << "  # Pure realtime mode (< 100ms latency, no files)" << std::endl;
+    std::cerr << "  sudo " << program_name << " -i eth0 --realtime" << std::endl;
     std::cerr << std::endl;
-    std::cerr << "  # Live capture with custom interval (60 minutes)" << std::endl;
-    std::cerr << "  " << program_name << " -i eth0 -t 60" << std::endl;
+    std::cerr << "  # Realtime mode with file backup" << std::endl;
+    std::cerr << "  sudo " << program_name << " -i eth0 -r --with-files -t 5" << std::endl;
     std::cerr << std::endl;
-    std::cerr << "  # Offline mode (parse existing pcap)" << std::endl;
-    std::cerr << "  " << program_name << " -f capture.pcap -t 30" << std::endl;
+    std::cerr << "  # Offline analysis" << std::endl;
+    std::cerr << "  " << program_name << " -f capture.pcap" << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # List available interfaces" << std::endl;
     std::cerr << "  " << program_name << " -i list" << std::endl;
@@ -96,9 +98,11 @@ int main(int argc, char* argv[]) {
     std::string input_file;
     std::string interface;
     std::string output_dir = "output";
-    int time_interval = 30;  // 기본 30분
+    int time_interval = 0;  // 0 = 전체 통합
     int num_threads = 0;
     bool live_mode = false;
+    bool realtime_mode = false;
+    bool disable_file_output = false;
     
     // 명령줄 인자 파싱
     for (int i = 1; i < argc; i++) {
@@ -118,6 +122,11 @@ int main(int argc, char* argv[]) {
             num_threads = std::atoi(argv[++i]);
         } else if (arg == "-o" && i + 1 < argc) {
             output_dir = argv[++i];
+        } else if (arg == "--realtime" || arg == "-r") {
+            realtime_mode = true;
+            disable_file_output = true;  // 실시간 모드는 기본적으로 파일 출력 비활성화
+        } else if (arg == "--with-files") {
+            disable_file_output = false;  // 파일도 함께 저장
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
@@ -138,13 +147,40 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    if (time_interval <= 0) {
-        std::cerr << "Error: Time interval must be positive" << std::endl;
+    if (time_interval < 0) {
+        std::cerr << "Error: Time interval must be non-negative (0 = all in one file)" << std::endl;
         return 1;
     }
 
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = nullptr;
+    
+    // Redis 설정 (실시간 모드일 때만)
+    RedisCacheConfig* redis_config_ptr = nullptr;
+    RedisCacheConfig redis_config;
+    if (realtime_mode) {
+        redis_config.host = "127.0.0.1";
+        redis_config.port = 6379;
+        // redis_config.password = "your_password";  // 필요시 설정
+        redis_config_ptr = &redis_config;
+    }
+    
+    // Elasticsearch 설정 (실시간 모드일 때만)
+    ElasticsearchConfig* es_config_ptr = nullptr;
+    ElasticsearchConfig es_config;
+    if (realtime_mode) {
+        es_config.host = "100.126.141.58";
+        es_config.port = 9200;
+        es_config.username = "";  // 필요시 설정
+        es_config.password = "";
+        es_config.bulk_size = 50;           // 50개마다 전송
+        es_config.flush_interval_ms = 100;  // 100ms마다 강제 flush
+        es_config_ptr = &es_config;
+        
+        std::cout << "[INFO] Realtime mode: Elasticsearch bulk_size=" 
+                  << es_config.bulk_size << ", flush_interval=" 
+                  << es_config.flush_interval_ms << "ms" << std::endl;
+    }
     
     // pcap 핸들 생성
     if (live_mode) {
@@ -152,7 +188,14 @@ int main(int argc, char* argv[]) {
         std::cout << "Live Capture Mode" << std::endl;
         std::cout << "========================================" << std::endl;
         std::cout << "Interface: " << interface << std::endl;
-        std::cout << "Time interval: " << time_interval << " minutes" << std::endl;
+        if (realtime_mode) {
+            std::cout << "Mode: REALTIME (no file output)" << std::endl;
+            if (!disable_file_output) {
+                std::cout << "File backup: ENABLED (" << time_interval << " min)" << std::endl;
+            }
+        } else {
+            std::cout << "Time interval: " << time_interval << " minutes" << std::endl;
+        }
         std::cout << "Output directory: " << output_dir << std::endl;
         std::cout << "========================================" << std::endl;
         
@@ -169,7 +212,11 @@ int main(int argc, char* argv[]) {
         std::cout << "Offline Mode" << std::endl;
         std::cout << "========================================" << std::endl;
         std::cout << "Input file: " << input_file << std::endl;
-        std::cout << "Time interval: " << time_interval << " minutes" << std::endl;
+        std::cout << "Time interval: " << time_interval << " minutes";
+        if (time_interval == 0) {
+            std::cout << " (all in one file)";
+        }
+        std::cout << std::endl;
         std::cout << "Output directory: " << output_dir << std::endl;
         std::cout << "========================================" << std::endl;
         
@@ -187,8 +234,9 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // PacketParser 생성 (항상 time_interval 사용)
-    PacketParser parser(output_dir, time_interval, num_threads);
+    // PacketParser 생성
+    PacketParser parser(output_dir, time_interval, num_threads, 
+                       redis_config_ptr, es_config_ptr, disable_file_output);
     g_parser = &parser;
     
     // 워커 스레드 시작
@@ -216,13 +264,15 @@ int main(int argc, char* argv[]) {
     // 워커 스레드 종료
     parser.stopWorkers();
     
-    std::cout << "[INFO] Generating output files..." << std::endl;
-    
-    // 통합 CSV/JSONL 생성
-    parser.generateUnifiedOutput();
-    
-    std::cout << "[INFO] Output files generated in '" << output_dir << "/' directory" << std::endl;
-    std::cout << "[INFO] Format: output_YYYYMMDD_HHMM.csv and output_YYYYMMDD_HHMM.jsonl" << std::endl;
+    // 출력 파일 생성 (파일 출력이 활성화된 경우만)
+    if (!disable_file_output) {
+        std::cout << "[INFO] Generating output files..." << std::endl;
+        parser.generateUnifiedOutput();
+        std::cout << "[INFO] Output files generated in '" << output_dir << "/' directory" << std::endl;
+        std::cout << "[INFO] Format: output_*.csv and output_*.jsonl" << std::endl;
+    } else {
+        std::cout << "[INFO] File output disabled - data sent to Elasticsearch only" << std::endl;
+    }
     
     pcap_close(handle);
     return 0;

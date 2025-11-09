@@ -1,53 +1,123 @@
-# Use Ubuntu 22.04 as the base image
-FROM ubuntu:22.04 AS builder
+# ============================================
+# C++ Parser - Dockerfile
+# ============================================
+# Parser/build/parser 바이너리를 실행하는 경량 이미지
+# Ubuntu 24.04 사용 (GLIBC 2.38+ 지원)
 
-# Avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+FROM ubuntu:24.04
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
+# 필수 런타임 라이브러리 설치
+RUN apt-get update && apt-get install -y \
+    libstdc++6 \
+    libgcc-s1 \
+    libc6 \
+    ca-certificates \
+    libhiredis-dev \
+    librdkafka-dev \
     libpcap-dev \
+    libcurl4 \
+    libssl3 \
+    iproute2 \
+    net-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
+# hiredis 심볼릭 링크 생성 (버전 호환성)
+RUN if [ ! -f /usr/lib/x86_64-linux-gnu/libhiredis.so.1.1.0 ] && [ ! -f /usr/lib/aarch64-linux-gnu/libhiredis.so.1.1.0 ]; then \
+    if [ -f /usr/lib/x86_64-linux-gnu/libhiredis.so ]; then \
+        ln -sf /usr/lib/x86_64-linux-gnu/libhiredis.so /usr/lib/x86_64-linux-gnu/libhiredis.so.1.1.0; \
+    elif [ -f /usr/lib/aarch64-linux-gnu/libhiredis.so ]; then \
+        ln -sf /usr/lib/aarch64-linux-gnu/libhiredis.so /usr/lib/aarch64-linux-gnu/libhiredis.so.1.1.0; \
+    fi \
+    fi
+
+# 작업 디렉토리 생성
 WORKDIR /app
 
-# Copy the parser source code (Corrected paths relative to build context)
-COPY ./src ./src
-COPY ./CMakeLists.txt ./
-COPY ./assets ./assets
+# 빌드된 parser 바이너리 복사
+COPY build/parser /app/parser
 
-# Build the parser
-RUN cmake -B build && \
-    cmake --build build
+# 설정 파일 복사
+COPY config.json /app/config.json
 
-# --- Final Stage ---
-# Use a smaller base image for the final image
-FROM ubuntu:22.04
+# Assets 디렉토리 복사 (CSV 파일들)
+COPY assets /app/assets
 
-# Install runtime dependencies (libpcap0.8)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libpcap0.8 \
-    && rm -rf /var/lib/apt/lists/*
+# 실행 권한 부여
+RUN chmod +x /app/parser
 
-# Set the working directory
-WORKDIR /app
+# 로그 디렉토리 생성
+RUN mkdir -p /app/logs
 
-# Copy the built parser executable and assets from the builder stage
-COPY --from=builder /app/build/parser .
-COPY --from=builder /app/assets ./assets
-
-# Copy the entrypoint script (Corrected path relative to build context)
-COPY ./entrypoint.sh .
-RUN chmod +x ./entrypoint.sh
-
-# Create output directory
+# 출력 디렉토리 생성 (실제 parser가 사용하는 경로)
 RUN mkdir -p /app/output
 
-# Run the entrypoint script when the container starts
-ENTRYPOINT ["./entrypoint.sh"]
+# 출력 디렉토리 생성 (config.json에 설정된 경로)
+RUN mkdir -p /data/parser-output
 
+# 환경 변수 설정 (docker-compose.yml에서 덮어쓰기 가능)
+ENV REDIS_HOST=redis
+ENV REDIS_PORT=6379
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+ENV OUTPUT_DIR=/data/parser-output
+# NETWORK_INTERFACE는 docker-compose.yml에서 설정
+ENV BPF_FILTER=""
+ENV ROLLING_INTERVAL=30
+
+# Entrypoint 스크립트 생성
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "========================================"\n\
+echo "Real-time ICS Packet Capture & Analysis"\n\
+echo "========================================"\n\
+echo ""\n\
+echo "Checking network interfaces..."\n\
+ip link show || ifconfig -a || true\n\
+echo ""\n\
+\n\
+# 기본값 설정 (환경 변수가 없는 경우)\n\
+: ${NETWORK_INTERFACE:=any}\n\
+\n\
+echo "[INFO] Target interface: $NETWORK_INTERFACE"\n\
+\n\
+# 네트워크 인터페이스 존재 확인\n\
+if [ "$NETWORK_INTERFACE" != "any" ] && ! ip link show "$NETWORK_INTERFACE" > /dev/null 2>&1; then\n\
+    echo "[WARN] Interface $NETWORK_INTERFACE not found. Available interfaces:"\n\
+    ip link show | grep -E "^[0-9]+:" | awk "{print \\$2}" | sed "s/:$//" | sed "s/@.*//" || true\n\
+    echo ""\n\
+    echo "[INFO] Falling back to interface: any"\n\
+    NETWORK_INTERFACE="any"\n\
+fi\n\
+\n\
+# Parser 실행\n\
+ARGS=(-i "$NETWORK_INTERFACE")\n\
+\n\
+# 실시간 모드 활성화 (Redis + Elasticsearch)\n\
+ARGS+=(--realtime)\n\
+\n\
+# 파일도 함께 저장 (백업용)\n\
+ARGS+=(--with-files)\n\
+\n\
+# 출력 디렉토리 설정\n\
+ARGS+=(-o /app/output)\n\
+\n\
+if [ -n "$BPF_FILTER" ]; then\n\
+    ARGS+=(-f "$BPF_FILTER")\n\
+fi\n\
+\n\
+if [ -n "$ROLLING_INTERVAL" ] && [ "$ROLLING_INTERVAL" != "0" ]; then\n\
+    ARGS+=(-t "$ROLLING_INTERVAL")\n\
+    echo "[INFO] Rolling interval: ${ROLLING_INTERVAL} minutes"\n\
+else\n\
+    echo "[INFO] Rolling interval: DISABLED (continuous streaming mode)"\n\
+fi\n\
+\n\
+echo "Starting parser with arguments: ${ARGS[@]}"\n\
+echo "========================================"\n\
+echo ""\n\
+\n\
+exec /app/parser "${ARGS[@]}"\n\
+' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+# 실행
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -53,10 +53,22 @@ static std::string format_timestamp(const struct timeval& ts) {
     return std::string(buf);
 }
 
-PacketParser::PacketParser(const std::string& output_dir, int time_interval, int num_threads)
+PacketParser::PacketParser(const std::string& output_dir, 
+                          int time_interval, 
+                          int num_threads,
+                          const RedisCacheConfig* redis_config,
+                          const ElasticsearchConfig* es_config,
+                          bool disable_file_output)
     : m_output_dir(output_dir),
       m_time_interval(time_interval),
+      m_num_threads(0),
+      m_disable_file_output(disable_file_output),
       m_assetManager("assets/자산IP.csv", "assets/유선_Input.csv", "assets/유선_Output.csv"),
+      m_unified_writer(nullptr),
+      m_redis_cache(nullptr),
+      m_elasticsearch(nullptr),
+      m_use_redis(redis_config != nullptr),
+      m_use_elasticsearch(es_config != nullptr),
       m_stop_flag(false),
       m_packets_processed(0),
       m_packets_queued(0) {
@@ -77,9 +89,36 @@ PacketParser::PacketParser(const std::string& output_dir, int time_interval, int
     
     std::cout << "[INFO] Using " << m_num_threads << " worker threads" << std::endl;
 
-    // UnifiedWriter 초기화
-    m_unified_writer = std::make_unique<UnifiedWriter>(m_output_dir, m_time_interval);
-    std::cout << "[INFO] UnifiedWriter initialized with " << m_time_interval << " minute intervals" << std::endl;
+    // UnifiedWriter 초기화 (파일 출력이 필요한 경우만)
+    if (!m_disable_file_output) {
+        m_unified_writer = std::make_unique<UnifiedWriter>(m_output_dir, m_time_interval);
+        std::cout << "[INFO] UnifiedWriter initialized with " << m_time_interval 
+                  << " minute intervals" << std::endl;
+    } else {
+        std::cout << "[INFO] File output disabled - realtime mode only" << std::endl;
+    }
+
+    // Redis 초기화
+    if (m_use_redis) {
+        m_redis_cache = std::make_unique<RedisCache>(*redis_config);
+        if (m_redis_cache->connect()) {
+            std::cout << "[INFO] Redis connection established" << std::endl;
+        } else {
+            std::cerr << "[WARN] Redis connection failed" << std::endl;
+            m_use_redis = false;
+        }
+    }
+    
+    // Elasticsearch 초기화
+    if (m_use_elasticsearch) {
+        m_elasticsearch = std::make_unique<ElasticsearchClient>(*es_config);
+        if (m_elasticsearch->connect()) {
+            std::cout << "[INFO] Elasticsearch connection established" << std::endl;
+        } else {
+            std::cerr << "[WARN] Elasticsearch connection failed" << std::endl;
+            m_use_elasticsearch = false;
+        }
+    }
 
     // 워커별 파서 생성
     m_worker_parsers.resize(m_num_threads);
@@ -106,17 +145,140 @@ void PacketParser::createParsersForWorker(int worker_id) {
     parsers.push_back(std::make_unique<GenericParser>("bacnet"));
     parsers.push_back(std::make_unique<UnknownParser>());
 
-    // 각 파서에 UnifiedWriter 설정
-    for (const auto& parser : parsers) {
-        parser->setUnifiedWriter(m_unified_writer.get());
+    // 파일 출력이 활성화된 경우만 UnifiedWriter 설정
+    if (!m_disable_file_output && m_unified_writer) {
+        for (const auto& parser : parsers) {
+            parser->setUnifiedWriter(m_unified_writer.get());
+        }
+        
+        // 첫 번째 워커만 백엔드 콜백 설정
+        if (worker_id == 0) {
+            m_unified_writer->setBackendCallback(
+                [this](const UnifiedRecord& record) {
+                    this->sendToBackends(record);
+                }
+            );
+        }
+    } else {
+        // 파일 출력 없이 직접 백엔드로 전송
+        for (const auto& parser : parsers) {
+            // DummyWriter를 설정하거나 직접 콜백 설정
+            parser->setDirectBackendCallback(
+                [this](const UnifiedRecord& record) {
+                    this->sendToBackends(record);
+                }
+            );
+        }
     }
 }
 
 PacketParser::~PacketParser() {
     std::cout << "[INFO] PacketParser destructor called" << std::endl;
     stopWorkers();
+    
+    // Redis & Elasticsearch 연결 해제
+    if (m_redis_cache) {
+        m_redis_cache->disconnect();
+    }
+    if (m_elasticsearch) {
+        m_elasticsearch->disconnect();
+    }
+    
     std::cout << "[INFO] Total packets processed: " << m_packets_processed.load() << std::endl;
     std::cout << "[INFO] PacketParser cleanup complete" << std::endl;
+}
+
+void PacketParser::sendToBackends(const UnifiedRecord& record) {
+    // Elasticsearch로 즉시 전송 (bulk에 추가)
+    if (m_use_elasticsearch && m_elasticsearch->isConnected()) {
+        json es_doc;
+        es_doc["@timestamp"] = record.timestamp;
+        es_doc["protocol"] = record.protocol;
+        es_doc["src_ip"] = record.sip;
+        es_doc["dst_ip"] = record.dip;
+        
+        // 포트 파싱 (빈 문자열 처리)
+        try {
+            es_doc["src_port"] = record.sp.empty() ? 0 : std::stoi(record.sp);
+            es_doc["dst_port"] = record.dp.empty() ? 0 : std::stoi(record.dp);
+        } catch (...) {
+            es_doc["src_port"] = 0;
+            es_doc["dst_port"] = 0;
+        }
+        
+        es_doc["src_mac"] = record.smac;
+        es_doc["dst_mac"] = record.dmac;
+        es_doc["direction"] = record.dir;
+        
+        // protocol_details 파싱
+        try {
+            es_doc["protocol_details"] = json::parse(record.details_json);
+        } catch (...) {
+            es_doc["protocol_details"] = json::object();
+        }
+        
+        // 프로토콜별 중요 필드 추출 (대시보드 필터링용)
+        if (record.protocol == "modbus_tcp") {
+            if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
+            if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
+            if (!record.modbus_description.empty()) es_doc["description"] = record.modbus_description;
+        } else if (record.protocol == "s7comm") {
+            if (!record.s7_fn.empty()) es_doc["s7_function"] = record.s7_fn;
+            if (!record.s7_description.empty()) es_doc["description"] = record.s7_description;
+        } else if (record.protocol == "xgt-fen") {
+            if (!record.xgt_cmd.empty()) es_doc["xgt_command"] = record.xgt_cmd;
+            if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
+        }
+        
+        // 자산 정보 추가
+        if (m_use_redis && m_redis_cache->isConnected()) {
+            AssetInfo src_asset = m_redis_cache->getAssetInfo(record.sip);
+            AssetInfo dst_asset = m_redis_cache->getAssetInfo(record.dip);
+            
+            if (!src_asset.asset_id.empty()) {
+                es_doc["src_asset"] = src_asset.toJson();
+            }
+            if (!dst_asset.asset_id.empty()) {
+                es_doc["dst_asset"] = dst_asset.toJson();
+            }
+        }
+        
+        // Bulk에 추가 (100개 이상이면 자동 flush됨)
+        if (!m_elasticsearch->addToBulk(record.protocol, es_doc)) {
+            std::cerr << "[WARN] Failed to add to Elasticsearch bulk" << std::endl;
+        }
+    }
+    
+    // Redis Stream으로 전송 (ML/DL 파이프라인용)
+    if (m_use_redis && m_redis_cache->isConnected()) {
+        ParsedPacketData redis_data;
+        redis_data.timestamp = record.timestamp;
+        redis_data.protocol = record.protocol;
+        redis_data.src_ip = record.sip;
+        redis_data.dst_ip = record.dip;
+        
+        try {
+            redis_data.src_port = record.sp.empty() ? 0 : std::stoi(record.sp);
+            redis_data.dst_port = record.dp.empty() ? 0 : std::stoi(record.dp);
+        } catch (...) {
+            redis_data.src_port = 0;
+            redis_data.dst_port = 0;
+        }
+        
+        redis_data.src_mac = record.smac;
+        redis_data.dst_mac = record.dmac;
+        
+        try {
+            redis_data.protocol_details = json::parse(record.details_json);
+        } catch (...) {
+            redis_data.protocol_details = json::object();
+        }
+        
+        redis_data.features = json::object();
+        
+        std::string stream_name = RedisKeys::protocolStream(record.protocol);
+        m_redis_cache->pushToStream(stream_name, redis_data);
+    }
 }
 
 void PacketParser::startWorkers() {
@@ -126,8 +288,43 @@ void PacketParser::startWorkers() {
         m_workers.emplace_back(&PacketParser::workerThread, this, i);
     }
     
+    // Elasticsearch 실시간 flush 스레드
+    if (m_use_elasticsearch) {
+        m_workers.emplace_back(&PacketParser::realtimeFlushThread, this);
+    }
+    
     std::cout << "[INFO] Worker threads started" << std::endl;
 }
+
+void PacketParser::realtimeFlushThread() {
+    std::cout << "[INFO] Realtime flush thread started" << std::endl;
+    
+    auto last_flush = std::chrono::steady_clock::now();
+    const auto flush_interval = std::chrono::milliseconds(100);  // 100ms마다 체크
+    
+    while (!m_stop_flag.load()) {
+        std::this_thread::sleep_for(flush_interval);
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush);
+        
+        // 100ms마다 또는 버퍼가 가득 찼을 때 flush
+        if (elapsed >= flush_interval) {
+            if (m_elasticsearch && m_elasticsearch->isConnected()) {
+                m_elasticsearch->flushBulk();
+            }
+            last_flush = now;
+        }
+    }
+    
+    // 종료 시 마지막 flush
+    if (m_elasticsearch && m_elasticsearch->isConnected()) {
+        m_elasticsearch->flushBulk();
+    }
+    
+    std::cout << "[INFO] Realtime flush thread stopped" << std::endl;
+}
+
 
 void PacketParser::stopWorkers() {
     if (m_workers.empty()) return;
@@ -200,7 +397,8 @@ void PacketParser::workerThread(int worker_id) {
 }
 
 void PacketParser::generateUnifiedOutput() {
-    if (!m_unified_writer) {
+    if (m_disable_file_output || !m_unified_writer) {
+        std::cout << "[INFO] File output disabled - skipping file generation" << std::endl;
         return;
     }
     
@@ -231,7 +429,7 @@ void PacketParser::parse(const struct pcap_pkthdr* header, const u_char* packet)
 }
 
 void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* packet, int worker_id) {
-    if (!packet || header->caplen < sizeof(EthernetHeader)) return;
+    if (!packet || static_cast<size_t>(header->caplen) < sizeof(EthernetHeader)) return;
 
     const EthernetHeader* eth_header = (const EthernetHeader*)(packet);
     uint16_t eth_type = ntohs(eth_header->eth_type);
@@ -264,7 +462,9 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
 
     // IPv4 패킷 처리
     if (eth_type == 0x0800) {
-        if (l3_payload_size < sizeof(IPHeader)) return;
+        // size_t로 캐스팅하여 경고 제거
+        if (static_cast<size_t>(l3_payload_size) < sizeof(IPHeader)) return;
+        
         const IPHeader* ip_header = (const IPHeader*)(l3_payload);
         char src_ip_str[INET_ADDRSTRLEN];
         char dst_ip_str[INET_ADDRSTRLEN];
@@ -276,7 +476,9 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
 
         // TCP 패킷 처리
         if (ip_header->p == IPPROTO_TCP) {
-            if (l4_payload_size < sizeof(TCPHeader)) return;
+            // size_t로 캐스팅하여 경고 제거
+            if (static_cast<size_t>(l4_payload_size) < sizeof(TCPHeader)) return;
+            
             const TCPHeader* tcp_header = (const TCPHeader*)(l4_payload);
             
             int tcp_header_len = tcp_header->off * 4;
@@ -325,7 +527,9 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
         }
         // UDP 패킷 처리
         else if (ip_header->p == IPPROTO_UDP) {
-            if (l4_payload_size < sizeof(UDPHeader)) return;
+            // size_t로 캐스팅하여 경고 제거
+            if (static_cast<size_t>(l4_payload_size) < sizeof(UDPHeader)) return;
+            
             const UDPHeader* udp_header = (const UDPHeader*)(l4_payload);
             const u_char* l7_payload = l4_payload + sizeof(UDPHeader);
             int l7_payload_size = l4_payload_size - sizeof(UDPHeader);
