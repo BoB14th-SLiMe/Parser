@@ -14,7 +14,7 @@ class ModbusParser : public BaseProtocolParser {
 public:
     explicit ModbusParser(AssetManager& assetManager);
     ~ModbusParser() override;
-
+    
     std::string getName() const override;
     bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
