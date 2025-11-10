@@ -60,6 +60,22 @@ add_executable(parser
     ${PROTOCOL_SOURCES}
 )
 
+add_compile_options(
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wconversion
+    -Wsign-conversion
+    -Wunused
+)
+
+# 디버그 빌드에서 주소 새니타이저 활성화
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
 # Link libraries
 target_link_libraries(parser
     ${PCAP_LIBRARIES}

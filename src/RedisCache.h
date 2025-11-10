@@ -6,6 +6,8 @@
 #include <memory>
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
+#include "RedisConnectionPool.h"
+#include "RedisAsyncWriter.h"
 
 using json = nlohmann::json;
 
@@ -17,13 +19,19 @@ struct RedisCacheConfig {
     int db = 0;
     int timeout_ms = 1000;
     
+    // Connection Pool 설정
+    int pool_size = 8;
+    
+    // Async Writer 설정
+    int async_writers = 2;
+    int async_queue_size = 10000;
+    
     // Stream 설정
-    int max_stream_length = 100000;  // 최대 메시지 수
-    int batch_size = 100;             // ML 읽기 배치 크기
+    int max_stream_length = 100000;
     
     // TTL 설정
-    int asset_cache_ttl = 3600;       // 자산 정보 캐시 1시간
-    int alert_ttl = 86400;            // 알람 24시간 보관
+    int asset_cache_ttl = 3600;
+    int alert_ttl = 86400;
 };
 
 // 자산 식별 정보
@@ -47,12 +55,11 @@ struct AssetInfo {
     }
 };
 
-// 파싱된 패킷 데이터 (Redis에 저장할 구조)
+// 파싱된 패킷 데이터
 struct ParsedPacketData {
     std::string timestamp;
     std::string protocol;
     
-    // 네트워크 정보
     std::string src_ip;
     std::string dst_ip;
     uint16_t src_port;
@@ -60,14 +67,10 @@ struct ParsedPacketData {
     std::string src_mac;
     std::string dst_mac;
     
-    // 자산 식별 정보 (CSV 기반)
     AssetInfo src_asset;
     AssetInfo dst_asset;
     
-    // 프로토콜별 세부 정보 (JSON)
     json protocol_details;
-    
-    // ML/DL 피처
     json features;
     
     json toJson() const {
@@ -96,51 +99,38 @@ public:
     // 연결 관리
     bool connect();
     void disconnect();
-    bool isConnected() const { return m_connected; }
+    bool isConnected() const;
     
-    // === 1. 자산 정보 캐싱 (빠른 조회) ===
+    // === 1. 자산 정보 캐싱 (비동기) ===
     bool cacheAssetInfo(const std::string& ip, const AssetInfo& info);
-    AssetInfo getAssetInfo(const std::string& ip);
+    AssetInfo getAssetInfo(const std::string& ip);  // 동기 읽기
     
-    // === 2. Redis Stream 기반 실시간 데이터 전송 ===
-    // C++ → Redis Stream → ML/DL
+    // === 2. Redis Stream (비동기) ===
     bool pushToStream(const std::string& stream_name, const ParsedPacketData& data);
     
-    // ML/DL에서 배치 읽기 (비블로킹)
-    std::vector<ParsedPacketData> readFromStream(
-        const std::string& stream_name, 
-        const std::string& consumer_group,
-        const std::string& consumer_name,
-        int count = 100
-    );
-    
-    // === 3. ML/DL 결과 발행 (Pub/Sub) ===
+    // === 3. Pub/Sub (비동기) ===
     bool publishAlert(const std::string& channel, const json& alert);
     
-    // === 4. 통계/메트릭 저장 ===
+    // === 4. 통계/메트릭 (비동기) ===
     bool incrementCounter(const std::string& key, int value = 1);
-    long long getCounter(const std::string& key);
+    long long getCounter(const std::string& key);  // 동기 읽기
     
-    // === 5. 프로토콜별 Stream 자동 생성 ===
+    // === 5. Stream 관리 ===
     void createProtocolStreams();
     
+    // 통계
+    void printStats() const;
+
 private:
     RedisCacheConfig m_config;
-    redisContext* m_context;
-    bool m_connected;
+    std::unique_ptr<RedisConnectionPool> m_pool;
+    std::unique_ptr<RedisAsyncWriter> m_async_writer;
     
-    // Redis 명령 실행 헬퍼
-    redisReply* executeCommand(const char* format, ...);
-    void freeReply(redisReply* reply);
-    
-    // 재연결 로직
-    bool reconnect();
-    
-    // 에러 처리
-    void logError(const std::string& operation);
+    static void freeReply(redisReply* reply);
+    void logError(const std::string& operation, const std::string& details = "");
 };
 
-// === Redis Stream 키 네이밍 규칙 ===
+// Redis 키 네이밍
 namespace RedisKeys {
     inline std::string protocolStream(const std::string& protocol) {
         return "stream:protocol:" + protocol;

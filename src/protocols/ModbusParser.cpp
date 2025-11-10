@@ -1,5 +1,5 @@
 #include "ModbusParser.h"
-#include "../UnifiedWriter.h"  // UnifiedRecord 정의를 위해 필요!
+#include "../UnifiedWriter.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -15,7 +15,8 @@
 #endif
 
 ModbusParser::ModbusParser(AssetManager& assetManager)
-    : m_assetManager(assetManager) {}
+    : m_assetManager(assetManager), 
+      m_last_cleanup(std::chrono::steady_clock::now()) {}
 
 ModbusParser::~ModbusParser() {}
 
@@ -38,6 +39,9 @@ bool ModbusParser::isProtocol(const PacketInfo& info) const {
 }
 
 void ModbusParser::parse(const PacketInfo& info) {
+    // 주기적으로 오래된 요청 정리 (선택사항)
+    cleanupOldRequests();
+    
     uint16_t trans_id = safe_ntohs(info.payload);
     const u_char* pdu = info.payload + 7;
     int pdu_len = info.payload_size - 7;
@@ -80,6 +84,7 @@ void ModbusParser::parse(const PacketInfo& info) {
     } else {
         ModbusRequestInfo new_req;
         new_req.function_code = current_fc;
+        new_req.timestamp = std::chrono::steady_clock::now();  // ← 타임스탬프 기록
         
         if (pdu_len >= 3) {
             if ((new_req.function_code >= 1 && new_req.function_code <= 6) ||

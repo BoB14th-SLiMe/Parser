@@ -1,120 +1,103 @@
-# ============================================
-# C++ Parser - Dockerfile
-# ============================================
-# Parser/build/parser 바이너리를 실행하는 경량 이미지
-# Ubuntu 24.04 사용 (GLIBC 2.38+ 지원)
-
 FROM ubuntu:24.04
+
+# 기본 환경 설정
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Seoul
 
 # 필수 런타임 라이브러리 설치
 RUN apt-get update && apt-get install -y \
-    libstdc++6 \
-    libgcc-s1 \
-    libc6 \
-    ca-certificates \
-    libhiredis-dev \
-    librdkafka-dev \
-    libpcap-dev \
+    libpcap0.8 \
     libcurl4 \
-    libssl3 \
-    iproute2 \
-    net-tools \
+    libhiredis-dev \
+    nlohmann-json3-dev \
+    libstdc++6 \
+    curl \
+    ca-certificates \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
-
-# hiredis 심볼릭 링크 생성 (버전 호환성)
-RUN if [ ! -f /usr/lib/x86_64-linux-gnu/libhiredis.so.1.1.0 ] && [ ! -f /usr/lib/aarch64-linux-gnu/libhiredis.so.1.1.0 ]; then \
-    if [ -f /usr/lib/x86_64-linux-gnu/libhiredis.so ]; then \
-        ln -sf /usr/lib/x86_64-linux-gnu/libhiredis.so /usr/lib/x86_64-linux-gnu/libhiredis.so.1.1.0; \
-    elif [ -f /usr/lib/aarch64-linux-gnu/libhiredis.so ]; then \
-        ln -sf /usr/lib/aarch64-linux-gnu/libhiredis.so /usr/lib/aarch64-linux-gnu/libhiredis.so.1.1.0; \
-    fi \
-    fi
 
 # 작업 디렉토리 생성
 WORKDIR /app
 
-# 빌드된 parser 바이너리 복사
-COPY build/parser /app/parser
-
-# 설정 파일 복사
-COPY config.json /app/config.json
-
-# Assets 디렉토리 복사 (CSV 파일들)
-COPY assets /app/assets
+# 빌드된 바이너리 복사
+COPY build/parser /usr/local/bin/parser
 
 # 실행 권한 부여
-RUN chmod +x /app/parser
+RUN chmod +x /usr/local/bin/parser
 
-# 로그 디렉토리 생성
-RUN mkdir -p /app/logs
+# Assets 디렉토리 복사 (옵션)
+COPY assets /app/assets
 
-# 출력 디렉토리 생성 (config.json에 설정된 경로)
+# 출력 디렉토리 생성
 RUN mkdir -p /data/output
 
-# 환경 변수 설정 (docker-compose.yml에서 덮어쓰기 가능)
-ENV REDIS_HOST=redis
-ENV REDIS_PORT=6379
-ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-ENV OUTPUT_DIR=/data/output
-# NETWORK_INTERFACE는 docker-compose.yml에서 설정
-ENV BPF_FILTER=""
-ENV ROLLING_INTERVAL=30
+# 볼륨 설정
+VOLUME ["/data/output", "/app/assets"]
 
-# Entrypoint 스크립트 생성
+# 헬스체크
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep -f parser || exit 1
+
+# 엔트리포인트 스크립트 생성
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
-echo "========================================"\n\
-echo "Real-time ICS Packet Capture & Analysis"\n\
-echo "========================================"\n\
-echo ""\n\
-echo "Checking network interfaces..."\n\
-ip link show || ifconfig -a || true\n\
-echo ""\n\
+# 환경 변수 기본값 설정\n\
+NETWORK_INTERFACE=${NETWORK_INTERFACE:-any}\n\
+PARSER_MODE=${PARSER_MODE:-realtime}\n\
+BPF_FILTER=${BPF_FILTER:-}\n\
+OUTPUT_DIR=${OUTPUT_DIR:-/data/output}\n\
+ROLLING_INTERVAL=${ROLLING_INTERVAL:-0}\n\
 \n\
-# 기본값 설정 (환경 변수가 없는 경우)\n\
-: ${NETWORK_INTERFACE:=any}\n\
+# Elasticsearch 설정\n\
+export ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST:-localhost}\n\
+export ELASTICSEARCH_PORT=${ELASTICSEARCH_PORT:-9200}\n\
+export ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME:-}\n\
+export ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:-}\n\
+export ELASTICSEARCH_INDEX_PREFIX=${ELASTICSEARCH_INDEX_PREFIX:-ics-packets}\n\
 \n\
-echo "[INFO] Target interface: $NETWORK_INTERFACE"\n\
+# Redis 설정\n\
+export REDIS_HOST=${REDIS_HOST:-localhost}\n\
+export REDIS_PORT=${REDIS_PORT:-6379}\n\
+export REDIS_PASSWORD=${REDIS_PASSWORD:-}\n\
+export REDIS_DB=${REDIS_DB:-0}\n\
 \n\
-# 네트워크 인터페이스 존재 확인\n\
-if [ "$NETWORK_INTERFACE" != "any" ] && ! ip link show "$NETWORK_INTERFACE" > /dev/null 2>&1; then\n\
-    echo "[WARN] Interface $NETWORK_INTERFACE not found. Available interfaces:"\n\
-    ip link show | grep -E "^[0-9]+:" | awk "{print \\$2}" | sed "s/:$//" | sed "s/@.*//" || true\n\
-    echo ""\n\
-    echo "[INFO] Falling back to interface: any"\n\
-    NETWORK_INTERFACE="any"\n\
+# 로그 레벨\n\
+export LOG_LEVEL=${LOG_LEVEL:-INFO}\n\
+\n\
+# 명령어 구성\n\
+CMD="parser -i ${NETWORK_INTERFACE}"\n\
+\n\
+# 모드 설정\n\
+if [ "${PARSER_MODE}" = "realtime" ]; then\n\
+    CMD="${CMD} --realtime"\n\
 fi\n\
+\n\
+# BPF 필터 추가\n\
+if [ ! -z "${BPF_FILTER}" ]; then\n\
+    CMD="${CMD} -f \"${BPF_FILTER}\""\n\
+fi\n\
+\n\
+# 롤링 간격 (분)\n\
+if [ "${ROLLING_INTERVAL}" -gt 0 ]; then\n\
+    CMD="${CMD} --rolling ${ROLLING_INTERVAL}"\n\
+fi\n\
+\n\
+# 출력 디렉토리\n\
+if [ ! -z "${OUTPUT_DIR}" ]; then\n\
+    CMD="${CMD} -o ${OUTPUT_DIR}"\n\
+fi\n\
+\n\
+echo "[INFO] Starting Parser..."\n\
+echo "[INFO] Network Interface: ${NETWORK_INTERFACE}"\n\
+echo "[INFO] Mode: ${PARSER_MODE}"\n\
+echo "[INFO] Elasticsearch: ${ELASTICSEARCH_HOST}:${ELASTICSEARCH_PORT}"\n\
+echo "[INFO] Redis: ${REDIS_HOST}:${REDIS_PORT}"\n\
+echo "[INFO] Command: ${CMD}"\n\
+echo ""\n\
 \n\
 # Parser 실행\n\
-ARGS=(-i "$NETWORK_INTERFACE")\n\
-\n\
-# 실시간 모드 활성화 (Redis + Elasticsearch)\n\
-ARGS+=(--realtime)\n\
-\n\
-# 파일도 함께 저장 (백업용)\n\
-ARGS+=(--with-files)\n\
-\n\
-# 출력 디렉토리 설정\n\
-ARGS+=(-o /app/output)\n\
-\n\
-if [ -n "$BPF_FILTER" ]; then\n\
-    ARGS+=(-f "$BPF_FILTER")\n\
-fi\n\
-\n\
-if [ -n "$ROLLING_INTERVAL" ] && [ "$ROLLING_INTERVAL" != "0" ]; then\n\
-    ARGS+=(-t "$ROLLING_INTERVAL")\n\
-    echo "[INFO] Rolling interval: ${ROLLING_INTERVAL} minutes"\n\
-else\n\
-    echo "[INFO] Rolling interval: DISABLED (continuous streaming mode)"\n\
-fi\n\
-\n\
-echo "Starting parser with arguments: ${ARGS[@]}"\n\
-echo "========================================"\n\
-echo ""\n\
-\n\
-exec /app/parser "${ARGS[@]}"\n\
-' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+eval exec ${CMD}\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
 
-# 실행
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

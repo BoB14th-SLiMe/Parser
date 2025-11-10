@@ -1,96 +1,130 @@
 #include "RedisCache.h"
 #include <iostream>
-#include <cstdarg>
+#include <iomanip>  
 
 RedisCache::RedisCache(const RedisCacheConfig& config)
-    : m_config(config), m_context(nullptr), m_connected(false) {}
+    : m_config(config), m_pool(nullptr), m_async_writer(nullptr) {}
 
 RedisCache::~RedisCache() {
     disconnect();
 }
 
 bool RedisCache::connect() {
-    struct timeval timeout = { m_config.timeout_ms / 1000, 
-                               (m_config.timeout_ms % 1000) * 1000 };
+    std::cout << "[RedisCache] Initializing Redis connection..." << std::endl;
     
-    m_context = redisConnectWithTimeout(m_config.host.c_str(), 
-                                        m_config.port, timeout);
+    // Connection Pool 생성
+    m_pool = std::make_unique<RedisConnectionPool>(
+        m_config.host, 
+        m_config.port, 
+        m_config.pool_size,
+        m_config.timeout_ms
+    );
     
-    if (m_context == nullptr || m_context->err) {
-        logError("connect");
+    // 연결 테스트
+    RedisConnectionGuard guard(*m_pool);
+    if (!guard) {
+        std::cerr << "[RedisCache] ✗ Failed to acquire test connection" << std::endl;
         return false;
     }
     
     // 비밀번호 인증
     if (!m_config.password.empty()) {
-        redisReply* reply = (redisReply*)redisCommand(m_context, 
-                                                      "AUTH %s", 
-                                                      m_config.password.c_str());
-        if (reply == nullptr || reply->type == REDIS_REPLY_ERROR) {
-            logError("auth");
+        redisReply* reply = (redisReply*)redisCommand(
+            guard.get(), "AUTH %s", m_config.password.c_str());
+        
+        if (!reply || reply->type == REDIS_REPLY_ERROR) {
+            logError("auth", reply ? reply->str : "");
             freeReply(reply);
             return false;
         }
         freeReply(reply);
+        std::cout << "[RedisCache] ✓ Authentication successful" << std::endl;
     }
     
     // DB 선택
-    redisReply* reply = (redisReply*)redisCommand(m_context, 
-                                                  "SELECT %d", 
-                                                  m_config.db);
-    if (reply == nullptr || reply->type == REDIS_REPLY_ERROR) {
-        logError("select db");
+    redisReply* reply = (redisReply*)redisCommand(
+        guard.get(), "SELECT %d", m_config.db);
+    
+    if (!reply || reply->type == REDIS_REPLY_ERROR) {
+        logError("select db", reply ? reply->str : "");
         freeReply(reply);
         return false;
     }
     freeReply(reply);
     
-    m_connected = true;
-    std::cout << "[Redis] Connected to " << m_config.host 
-              << ":" << m_config.port << std::endl;
+    std::cout << "[RedisCache] ✓ Connection pool ready: " << m_config.host 
+              << ":" << m_config.port << " (DB " << m_config.db 
+              << ", " << m_config.pool_size << " connections)" << std::endl;
     
-    createProtocolStreams();
+    // Async Writer 시작
+    m_async_writer = std::make_unique<RedisAsyncWriter>(
+        *m_pool, 
+        m_config.async_writers,
+        m_config.async_queue_size
+    );
+    m_async_writer->start();
+    
+    std::cout << "[RedisCache] ✓ Async writer started (" 
+              << m_config.async_writers << " threads, queue size=" 
+              << m_config.async_queue_size << ")" << std::endl;
+    
+    std::cout << "[RedisCache] ✓✓✓ Fully initialized and ready!" << std::endl;
     return true;
 }
 
 void RedisCache::disconnect() {
-    if (m_context) {
-        redisFree(m_context);
-        m_context = nullptr;
+    std::cout << "[RedisCache] Initiating shutdown..." << std::endl;
+    
+    // Async Writer 먼저 종료 (남은 데이터 flush)
+    if (m_async_writer) {
+        std::cout << "[RedisCache] Stopping async writer..." << std::endl;
+        m_async_writer->stop();
+        m_async_writer.reset();
+        std::cout << "[RedisCache] ✓ Async writer stopped" << std::endl;
     }
-    m_connected = false;
+    
+    // Connection Pool 종료
+    if (m_pool) {
+        std::cout << "[RedisCache] Closing connection pool..." << std::endl;
+        m_pool->shutdown();
+        m_pool.reset();
+        std::cout << "[RedisCache] ✓ Connection pool closed" << std::endl;
+    }
+    
+    std::cout << "[RedisCache] ✓✓✓ Shutdown complete" << std::endl;
 }
 
-bool RedisCache::reconnect() {
-    disconnect();
-    return connect();
+bool RedisCache::isConnected() const {
+    return m_pool && m_pool->available() > 0;
 }
 
-// === 1. 자산 정보 캐싱 ===
+// === 1. 자산 정보 캐싱 (비동기) ===
 bool RedisCache::cacheAssetInfo(const std::string& ip, const AssetInfo& info) {
-    if (!isConnected() && !reconnect()) return false;
+    if (!m_async_writer) {
+        std::cerr << "[RedisCache] cacheAssetInfo: async writer not initialized" << std::endl;
+        return false;
+    }
     
-    std::string key = RedisKeys::assetCache(ip);
     json j = info.toJson();
-    
-    redisReply* reply = executeCommand(
-        "SETEX %s %d %s",
-        key.c_str(),
-        m_config.asset_cache_ttl,
-        j.dump().c_str()
-    );
-    
-    bool success = (reply && reply->type != REDIS_REPLY_ERROR);
-    freeReply(reply);
-    return success;
+    return m_async_writer->cacheAsset(ip, j.dump(), m_config.asset_cache_ttl);
 }
 
 AssetInfo RedisCache::getAssetInfo(const std::string& ip) {
     AssetInfo info;
-    if (!isConnected() && !reconnect()) return info;
+    
+    if (!m_pool) {
+        std::cerr << "[RedisCache] getAssetInfo: pool not initialized" << std::endl;
+        return info;
+    }
+    
+    RedisConnectionGuard guard(*m_pool);
+    if (!guard) {
+        std::cerr << "[RedisCache] getAssetInfo: failed to acquire connection" << std::endl;
+        return info;
+    }
     
     std::string key = RedisKeys::assetCache(ip);
-    redisReply* reply = executeCommand("GET %s", key.c_str());
+    redisReply* reply = (redisReply*)redisCommand(guard.get(), "GET %s", key.c_str());
     
     if (reply && reply->type == REDIS_REPLY_STRING) {
         try {
@@ -101,8 +135,9 @@ AssetInfo RedisCache::getAssetInfo(const std::string& ip) {
             info.asset_name = j.value("asset_name", "");
             info.group = j.value("group", "");
             info.location = j.value("location", "");
-        } catch (...) {
-            std::cerr << "[Redis] Failed to parse asset info" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[RedisCache] Failed to parse asset info for " << ip 
+                      << ": " << e.what() << std::endl;
         }
     }
     
@@ -110,141 +145,107 @@ AssetInfo RedisCache::getAssetInfo(const std::string& ip) {
     return info;
 }
 
-// === 2. Redis Stream 기반 실시간 데이터 전송 ===
+// === 2. Redis Stream (비동기) ===
 bool RedisCache::pushToStream(const std::string& stream_name, 
                               const ParsedPacketData& data) {
-    if (!isConnected() && !reconnect()) return false;
+    if (!m_async_writer) {
+        std::cerr << "[RedisCache] pushToStream: async writer not initialized" << std::endl;
+        return false;
+    }
     
+    // JSON 직렬화
     json j = data.toJson();
     std::string json_str = j.dump();
     
-    // XADD stream_name MAXLEN ~ 100000 * data <json>
-    redisReply* reply = executeCommand(
-        "XADD %s MAXLEN ~ %d * data %s",
-        stream_name.c_str(),
-        m_config.max_stream_length,
-        json_str.c_str()
-    );
+    // 비동기 쓰기 (즉시 리턴)
+    bool success = m_async_writer->writeStream(stream_name, json_str);
     
-    bool success = (reply && reply->type != REDIS_REPLY_ERROR);
-    freeReply(reply);
-    
+    // 통계 카운터도 비동기로 증가
     if (success) {
-        incrementCounter(RedisKeys::statsCounter(data.protocol));
+        m_async_writer->incrCounter(RedisKeys::statsCounter(data.protocol));
     }
     
     return success;
 }
 
-std::vector<ParsedPacketData> RedisCache::readFromStream(
-    const std::string& stream_name,
-    const std::string& consumer_group,
-    const std::string& consumer_name,
-    int count) {
-    
-    std::vector<ParsedPacketData> results;
-    if (!isConnected() && !reconnect()) return results;
-    
-    // Consumer Group 자동 생성 (없으면)
-    executeCommand("XGROUP CREATE %s %s 0 MKSTREAM",
-                  stream_name.c_str(),
-                  consumer_group.c_str());
-    
-    // XREADGROUP GROUP group consumer COUNT count BLOCK 100 STREAMS stream >
-    redisReply* reply = executeCommand(
-        "XREADGROUP GROUP %s %s COUNT %d BLOCK 100 STREAMS %s >",
-        consumer_group.c_str(),
-        consumer_name.c_str(),
-        count,
-        stream_name.c_str()
-    );
-    
-    if (reply && reply->type == REDIS_REPLY_ARRAY) {
-        // 응답 파싱 (복잡한 구조)
-        // reply->element[0]->element[1] = 메시지 배열
-        if (reply->elements > 0 && reply->element[0]->type == REDIS_REPLY_ARRAY) {
-            redisReply* stream_data = reply->element[0];
-            if (stream_data->elements > 1) {
-                redisReply* messages = stream_data->element[1];
-                
-                for (size_t i = 0; i < messages->elements; ++i) {
-                    redisReply* msg = messages->element[i];
-                    if (msg->elements >= 2) {
-                        // msg->element[0] = message ID
-                        // msg->element[1] = field-value 배열
-                        redisReply* fields = msg->element[1];
-                        
-                        // FIX: 변수명 충돌 수정 (j -> field_idx)
-                        for (size_t field_idx = 0; field_idx < fields->elements; field_idx += 2) {
-                            std::string field = fields->element[field_idx]->str;
-                            if (field == "data") {
-                                try {
-                                    json parsed_json = json::parse(fields->element[field_idx + 1]->str);
-                                    ParsedPacketData data;
-                                    data.timestamp = parsed_json.value("timestamp", "");
-                                    data.protocol = parsed_json.value("protocol", "");
-                                    data.src_ip = parsed_json.value("src_ip", "");
-                                    data.dst_ip = parsed_json.value("dst_ip", "");
-                                    data.src_port = parsed_json.value("src_port", 0);
-                                    data.dst_port = parsed_json.value("dst_port", 0);
-                                    data.protocol_details = parsed_json.value("protocol_details", json::object());
-                                    data.features = parsed_json.value("features", json::object());
-                                    results.push_back(data);
-                                } catch (...) {
-                                    std::cerr << "[Redis] Failed to parse message" << std::endl;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+// === 3. Pub/Sub (동기 - Alert는 즉시 전송 필요) ===
+bool RedisCache::publishAlert(const std::string& channel, const json& alert) {
+    if (!m_pool) {
+        std::cerr << "[RedisCache] publishAlert: pool not initialized" << std::endl;
+        return false;
     }
     
-    freeReply(reply);
-    return results;
-}
-
-// === 3. ML/DL 결과 발행 (Pub/Sub) ===
-bool RedisCache::publishAlert(const std::string& channel, const json& alert) {
-    if (!isConnected() && !reconnect()) return false;
+    RedisConnectionGuard guard(*m_pool);
+    if (!guard) {
+        std::cerr << "[RedisCache] publishAlert: failed to acquire connection" << std::endl;
+        return false;
+    }
     
-    redisReply* reply = executeCommand(
+    std::string alert_str = alert.dump();
+    redisReply* reply = (redisReply*)redisCommand(
+        guard.get(),
         "PUBLISH %s %s",
         channel.c_str(),
-        alert.dump().c_str()
+        alert_str.c_str()
     );
     
-    bool success = (reply && reply->type == REDIS_REPLY_INTEGER);
+    bool success = false;
+    if (reply && reply->type == REDIS_REPLY_INTEGER) {
+        success = true;
+        std::cout << "[RedisCache] Alert published to " << channel 
+                  << " (" << reply->integer << " subscribers)" << std::endl;
+    } else {
+        logError("publishAlert", reply && reply->str ? reply->str : "unknown error");
+    }
+    
     freeReply(reply);
     return success;
 }
 
-// === 4. 통계/메트릭 저장 ===
+// === 4. 통계/메트릭 ===
 bool RedisCache::incrementCounter(const std::string& key, int value) {
-    if (!isConnected() && !reconnect()) return false;
+    if (!m_async_writer) {
+        std::cerr << "[RedisCache] incrementCounter: async writer not initialized" << std::endl;
+        return false;
+    }
     
-    redisReply* reply = executeCommand("INCRBY %s %d", key.c_str(), value);
-    bool success = (reply && reply->type == REDIS_REPLY_INTEGER);
-    freeReply(reply);
-    return success;
+    // 비동기로 카운터 증가
+    for (int i = 0; i < value; ++i) {
+        m_async_writer->incrCounter(key);
+    }
+    
+    return true;
 }
 
 long long RedisCache::getCounter(const std::string& key) {
-    if (!isConnected() && !reconnect()) return 0;
+    if (!m_pool) {
+        std::cerr << "[RedisCache] getCounter: pool not initialized" << std::endl;
+        return 0;
+    }
     
-    redisReply* reply = executeCommand("GET %s", key.c_str());
+    RedisConnectionGuard guard(*m_pool);
+    if (!guard) {
+        std::cerr << "[RedisCache] getCounter: failed to acquire connection" << std::endl;
+        return 0;
+    }
+    
+    redisReply* reply = (redisReply*)redisCommand(guard.get(), "GET %s", key.c_str());
     long long value = 0;
     
     if (reply && reply->type == REDIS_REPLY_STRING) {
-        value = std::stoll(reply->str);
+        try {
+            value = std::stoll(reply->str);
+        } catch (const std::exception& e) {
+            std::cerr << "[RedisCache] Failed to parse counter value: " << e.what() << std::endl;
+            value = 0;
+        }
     }
     
     freeReply(reply);
     return value;
 }
 
-// === 5. 프로토콜별 Stream 자동 생성 ===
+// === 5. Stream 초기화 ===
 void RedisCache::createProtocolStreams() {
     std::vector<std::string> protocols = {
         "modbus_tcp", "s7comm", "xgt-fen", "dnp3", 
@@ -252,41 +253,94 @@ void RedisCache::createProtocolStreams() {
         "mms", "opc_ua", "bacnet", "arp", "tcp_session"
     };
     
+    if (!m_pool) {
+        std::cerr << "[RedisCache] createProtocolStreams: pool not initialized" << std::endl;
+        return;
+    }
+    
+    RedisConnectionGuard guard(*m_pool);
+    if (!guard) {
+        std::cerr << "[RedisCache] createProtocolStreams: failed to acquire connection" << std::endl;
+        return;
+    }
+    
+    std::cout << "[RedisCache] Initializing protocol streams..." << std::endl;
+    
+    int created_count = 0;
     for (const auto& protocol : protocols) {
         std::string stream_name = RedisKeys::protocolStream(protocol);
-        // Stream 존재 확인 (XINFO STREAM)
-        redisReply* reply = executeCommand("XINFO STREAM %s", stream_name.c_str());
+        
+        // Stream 존재 여부 확인
+        redisReply* reply = (redisReply*)redisCommand(
+            guard.get(), "XINFO STREAM %s", stream_name.c_str());
         
         if (reply && reply->type == REDIS_REPLY_ERROR) {
-            // Stream이 없으면 빈 메시지로 생성
-            executeCommand("XADD %s * _init 1", stream_name.c_str());
-            std::cout << "[Redis] Created stream: " << stream_name << std::endl;
+            // Stream이 없으면 생성
+            redisReply* create_reply = (redisReply*)redisCommand(
+                guard.get(), "XADD %s * _init 1", stream_name.c_str());
+            
+            if (create_reply && create_reply->type != REDIS_REPLY_ERROR) {
+                std::cout << "[RedisCache]   ✓ Created stream: " << stream_name << std::endl;
+                created_count++;
+            } else {
+                std::cerr << "[RedisCache]   ✗ Failed to create stream: " << stream_name << std::endl;
+            }
+            
+            freeReply(create_reply);
         }
         
         freeReply(reply);
     }
+    
+    std::cout << "[RedisCache] ✓ Stream initialization complete (" 
+              << created_count << " created, " 
+              << (protocols.size() - created_count) << " already exist)" << std::endl;
+}
+
+// === 통계 출력 ===
+void RedisCache::printStats() const {
+    std::cout << "\n┌─────────────────────────────────────┐" << std::endl;
+    std::cout << "│      Redis Cache Statistics         │" << std::endl;
+    std::cout << "├─────────────────────────────────────┤" << std::endl;
+    
+    if (m_pool) {
+        std::cout << "│ Connection Pool:                    │" << std::endl;
+        std::cout << "│   Available: " << std::setw(2) << m_pool->available() 
+                  << "/" << std::setw(2) << m_pool->capacity() << " connections     │" << std::endl;
+    } else {
+        std::cout << "│ Connection Pool: Not initialized    │" << std::endl;
+    }
+    
+    if (m_async_writer) {
+        auto stats = m_async_writer->getStats();
+        std::cout << "│ Async Writer:                       │" << std::endl;
+        std::cout << "│   Queue Size:  " << std::setw(8) << stats.queue_size << "          │" << std::endl;
+        std::cout << "│   Total Written: " << std::setw(10) << stats.total_written << "      │" << std::endl;
+        std::cout << "│   Total Dropped: " << std::setw(10) << stats.total_dropped << "      │" << std::endl;
+        
+        if (stats.total_written > 0) {
+            double drop_rate = (double)stats.total_dropped / (stats.total_written + stats.total_dropped) * 100.0;
+            std::cout << "│   Drop Rate:   " << std::fixed << std::setprecision(2) 
+                      << std::setw(6) << drop_rate << "%            │" << std::endl;
+        }
+    } else {
+        std::cout << "│ Async Writer: Not initialized       │" << std::endl;
+    }
+    
+    std::cout << "└─────────────────────────────────────┘\n" << std::endl;
 }
 
 // === Helper 함수 ===
-redisReply* RedisCache::executeCommand(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    redisReply* reply = (redisReply*)redisvCommand(m_context, format, args);
-    va_end(args);
-    return reply;
-}
-
 void RedisCache::freeReply(redisReply* reply) {
     if (reply) {
         freeReplyObject(reply);
     }
 }
 
-void RedisCache::logError(const std::string& operation) {
-    if (m_context && m_context->err) {
-        std::cerr << "[Redis Error] " << operation << ": " 
-                  << m_context->errstr << std::endl;
-    } else {
-        std::cerr << "[Redis Error] " << operation << ": Connection failed" << std::endl;
+void RedisCache::logError(const std::string& operation, const std::string& details) {
+    std::cerr << "[RedisCache Error] " << operation;
+    if (!details.empty()) {
+        std::cerr << ": " << details;
     }
+    std::cerr << std::endl;
 }

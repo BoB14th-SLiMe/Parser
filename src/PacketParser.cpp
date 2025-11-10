@@ -189,95 +189,104 @@ PacketParser::~PacketParser() {
 }
 
 void PacketParser::sendToBackends(const UnifiedRecord& record) {
-    // Elasticsearch로 즉시 전송 (bulk에 추가)
-    if (m_use_elasticsearch && m_elasticsearch->isConnected()) {
-        json es_doc;
-        es_doc["@timestamp"] = record.timestamp;
-        es_doc["protocol"] = record.protocol;
-        es_doc["src_ip"] = record.sip;
-        es_doc["dst_ip"] = record.dip;
-        
-        // 포트 파싱 (빈 문자열 처리)
-        try {
-            es_doc["src_port"] = record.sp.empty() ? 0 : std::stoi(record.sp);
-            es_doc["dst_port"] = record.dp.empty() ? 0 : std::stoi(record.dp);
-        } catch (...) {
-            es_doc["src_port"] = 0;
-            es_doc["dst_port"] = 0;
-        }
-        
-        es_doc["src_mac"] = record.smac;
-        es_doc["dst_mac"] = record.dmac;
-        es_doc["direction"] = record.dir;
-        
-        // protocol_details 파싱
-        try {
-            es_doc["protocol_details"] = json::parse(record.details_json);
-        } catch (...) {
-            es_doc["protocol_details"] = json::object();
-        }
-        
-        // 프로토콜별 중요 필드 추출 (대시보드 필터링용)
-        if (record.protocol == "modbus_tcp") {
-            if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
-            if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
-            if (!record.modbus_description.empty()) es_doc["description"] = record.modbus_description;
-        } else if (record.protocol == "s7comm") {
-            if (!record.s7_fn.empty()) es_doc["s7_function"] = record.s7_fn;
-            if (!record.s7_description.empty()) es_doc["description"] = record.s7_description;
-        } else if (record.protocol == "xgt-fen") {
-            if (!record.xgt_cmd.empty()) es_doc["xgt_command"] = record.xgt_cmd;
-            if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
-        }
-        
-        // 자산 정보 추가
-        if (m_use_redis && m_redis_cache->isConnected()) {
-            AssetInfo src_asset = m_redis_cache->getAssetInfo(record.sip);
-            AssetInfo dst_asset = m_redis_cache->getAssetInfo(record.dip);
+    try {
+        // Elasticsearch로 즉시 전송 (bulk에 추가)
+        if (m_use_elasticsearch && m_elasticsearch->isConnected()) {
+            json es_doc;
+            es_doc["@timestamp"] = record.timestamp;
+            es_doc["protocol"] = record.protocol;
+            es_doc["src_ip"] = record.sip;
+            es_doc["dst_ip"] = record.dip;
             
-            if (!src_asset.asset_id.empty()) {
-                es_doc["src_asset"] = src_asset.toJson();
+            // 포트 파싱 (빈 문자열 처리)
+            try {
+                es_doc["src_port"] = record.sp.empty() ? 0 : std::stoi(record.sp);
+                es_doc["dst_port"] = record.dp.empty() ? 0 : std::stoi(record.dp);
+            } catch (const std::exception& e) {
+                std::cerr << "[WARN] Port parsing error: " << e.what() << std::endl;
+                es_doc["src_port"] = 0;
+                es_doc["dst_port"] = 0;
             }
-            if (!dst_asset.asset_id.empty()) {
-                es_doc["dst_asset"] = dst_asset.toJson();
+            
+            es_doc["src_mac"] = record.smac;
+            es_doc["dst_mac"] = record.dmac;
+            es_doc["direction"] = record.dir;
+            
+            // protocol_details 파싱
+            try {
+                es_doc["protocol_details"] = json::parse(record.details_json);
+            } catch (const std::exception& e) {
+                std::cerr << "[WARN] JSON parsing error: " << e.what() << std::endl;
+                es_doc["protocol_details"] = json::object();
+            }
+            
+            // 프로토콜별 중요 필드 추출 (대시보드 필터링용)
+            if (record.protocol == "modbus_tcp") {
+                if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
+                if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
+                if (!record.modbus_description.empty()) es_doc["description"] = record.modbus_description;
+            } else if (record.protocol == "s7comm") {
+                if (!record.s7_fn.empty()) es_doc["s7_function"] = record.s7_fn;
+                if (!record.s7_description.empty()) es_doc["description"] = record.s7_description;
+            } else if (record.protocol == "xgt-fen") {
+                if (!record.xgt_cmd.empty()) es_doc["xgt_command"] = record.xgt_cmd;
+                if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
+            }
+            
+            // 자산 정보 추가
+            if (m_use_redis && m_redis_cache->isConnected()) {
+                AssetInfo src_asset = m_redis_cache->getAssetInfo(record.sip);
+                AssetInfo dst_asset = m_redis_cache->getAssetInfo(record.dip);
+                
+                if (!src_asset.asset_id.empty()) {
+                    es_doc["src_asset"] = src_asset.toJson();
+                }
+                if (!dst_asset.asset_id.empty()) {
+                    es_doc["dst_asset"] = dst_asset.toJson();
+                }
+            }
+            
+            // Bulk에 추가 (100개 이상이면 자동 flush됨)
+            if (!m_elasticsearch->addToBulk(record.protocol, es_doc)) {
+                std::cerr << "[WARN] Failed to add to Elasticsearch bulk" << std::endl;
             }
         }
         
-        // Bulk에 추가 (100개 이상이면 자동 flush됨)
-        if (!m_elasticsearch->addToBulk(record.protocol, es_doc)) {
-            std::cerr << "[WARN] Failed to add to Elasticsearch bulk" << std::endl;
+        // Redis Stream으로 전송 (ML/DL 파이프라인용)
+        if (m_use_redis && m_redis_cache->isConnected()) {
+            ParsedPacketData redis_data;
+            redis_data.timestamp = record.timestamp;
+            redis_data.protocol = record.protocol;
+            redis_data.src_ip = record.sip;
+            redis_data.dst_ip = record.dip;
+            
+            try {
+                redis_data.src_port = record.sp.empty() ? 0 : std::stoi(record.sp);
+                redis_data.dst_port = record.dp.empty() ? 0 : std::stoi(record.dp);
+            } catch (const std::exception& e) {
+                std::cerr << "[WARN] Port parsing error for Redis: " << e.what() << std::endl;
+                redis_data.src_port = 0;
+                redis_data.dst_port = 0;
+            }
+            
+            redis_data.src_mac = record.smac;
+            redis_data.dst_mac = record.dmac;
+            
+            try {
+                redis_data.protocol_details = json::parse(record.details_json);
+            } catch (const std::exception& e) {
+                redis_data.protocol_details = json::object();
+            }
+            
+            redis_data.features = json::object();
+            
+            std::string stream_name = RedisKeys::protocolStream(record.protocol);
+            if (!m_redis_cache->pushToStream(stream_name, redis_data)) {
+                std::cerr << "[WARN] Failed to push to Redis stream" << std::endl;
+            }
         }
-    }
-    
-    // Redis Stream으로 전송 (ML/DL 파이프라인용)
-    if (m_use_redis && m_redis_cache->isConnected()) {
-        ParsedPacketData redis_data;
-        redis_data.timestamp = record.timestamp;
-        redis_data.protocol = record.protocol;
-        redis_data.src_ip = record.sip;
-        redis_data.dst_ip = record.dip;
-        
-        try {
-            redis_data.src_port = record.sp.empty() ? 0 : std::stoi(record.sp);
-            redis_data.dst_port = record.dp.empty() ? 0 : std::stoi(record.dp);
-        } catch (...) {
-            redis_data.src_port = 0;
-            redis_data.dst_port = 0;
-        }
-        
-        redis_data.src_mac = record.smac;
-        redis_data.dst_mac = record.dmac;
-        
-        try {
-            redis_data.protocol_details = json::parse(record.details_json);
-        } catch (...) {
-            redis_data.protocol_details = json::object();
-        }
-        
-        redis_data.features = json::object();
-        
-        std::string stream_name = RedisKeys::protocolStream(record.protocol);
-        m_redis_cache->pushToStream(stream_name, redis_data);
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] sendToBackends exception: " << e.what() << std::endl;
     }
 }
 

@@ -3,6 +3,7 @@
 
 #include "BaseProtocolParser.h"
 #include "../AssetManager.h"
+#include <chrono>
 #include <cstdint>
 #include <vector>
 #include <string>

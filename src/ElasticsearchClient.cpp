@@ -85,43 +85,52 @@ bool ElasticsearchClient::sendRequest(const std::string& url,
                                        std::string& response) {
     if (!m_curl) return false;
     
-    curl_easy_setopt(m_curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(m_curl, CURLOPT_TIMEOUT, 10L);
-    
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    
-    if (!m_config.username.empty()) {
-        std::string auth = m_config.username + ":" + m_config.password;
-        curl_easy_setopt(m_curl, CURLOPT_USERPWD, auth.c_str());
-    }
-    
-    if (method == "POST" || method == "PUT") {
-        curl_easy_setopt(m_curl, CURLOPT_POSTFIELDS, data.c_str());
-        if (method == "PUT") {
-            curl_easy_setopt(m_curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    // 최대 3회 재시도
+    int max_retries = 3;
+    for (int retry = 0; retry < max_retries; ++retry) {
+        curl_easy_setopt(m_curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, writeCallback);
+        curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(m_curl, CURLOPT_TIMEOUT, 10L);
+        
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        
+        if (!m_config.username.empty()) {
+            std::string auth = m_config.username + ":" + m_config.password;
+            curl_easy_setopt(m_curl, CURLOPT_USERPWD, auth.c_str());
         }
-    } else if (method == "DELETE") {
-        curl_easy_setopt(m_curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+        
+        if (method == "POST" || method == "PUT") {
+            curl_easy_setopt(m_curl, CURLOPT_POSTFIELDS, data.c_str());
+            if (method == "PUT") {
+                curl_easy_setopt(m_curl, CURLOPT_CUSTOMREQUEST, "PUT");
+            }
+        } else if (method == "DELETE") {
+            curl_easy_setopt(m_curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+        }
+        
+        curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, headers);
+        
+        CURLcode res = curl_easy_perform(m_curl);
+        curl_slist_free_all(headers);
+        
+        if (res == CURLE_OK) {
+            long http_code = 0;
+            curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &http_code);
+            return (http_code >= 200 && http_code < 300);
+        }
+        
+        // 재시도 전 대기
+        if (retry < max_retries - 1) {
+            std::cerr << "[Elasticsearch] Request failed (retry " << retry + 1 
+                      << "/" << max_retries << "): " << curl_easy_strerror(res) << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
     
-    curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, headers);
-    
-    CURLcode res = curl_easy_perform(m_curl);
-    curl_slist_free_all(headers);
-    
-    if (res != CURLE_OK) {
-        std::cerr << "[Elasticsearch] Request failed: " 
-                  << curl_easy_strerror(res) << std::endl;
-        return false;
-    }
-    
-    long http_code = 0;
-    curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &http_code);
-    
-    return (http_code >= 200 && http_code < 300);
+    std::cerr << "[Elasticsearch] Request failed after " << max_retries << " retries" << std::endl;
+    return false;
 }
 
 std::string ElasticsearchClient::getTimeBasedIndex(const std::string& protocol) {
