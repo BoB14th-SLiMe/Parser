@@ -16,6 +16,21 @@
 #include <arpa/inet.h>
 #endif
 
+const uint16_t XGT_DTYPE_BIT = 0x0000;
+const uint16_t XGT_DTYPE_BYTE = 0x0001;
+const uint16_t XGT_DTYPE_WORD = 0x0002;
+const uint16_t XGT_DTYPE_DWORD = 0x0003;
+const uint16_t XGT_DTYPE_LWORD = 0x0004;
+const uint16_t XGT_DTYPE_CONTINUOUS = 0x0014;  // LE of 0x1400
+
+const uint16_t XGT_CMD_READ_REQ = 0x0054;      // LE of 0x5400
+const uint16_t XGT_CMD_READ_RESP = 0x0055;     // LE of 0x5500
+const uint16_t XGT_CMD_WRITE_REQ = 0x0058;     // LE of 0x5800
+const uint16_t XGT_CMD_WRITE_RESP = 0x0059;    // LE of 0x5900
+
+const uint16_t XGT_ERROR_STATUS_OK = 0x0000;
+const uint16_t XGT_ERROR_STATUS_ERR = 0xFFFF;
+
 
 // Helper function implementation to read little-endian values
 template <typename T>
@@ -71,108 +86,222 @@ bool XgtFenParser::parseHeader(const u_char* payload, size_t size, XgtFenHeader&
 
 bool XgtFenParser::parseInstruction(const u_char* inst_payload, size_t inst_size, 
                                      const XgtFenHeader& header, XgtFenInstruction& instruction) {
-    if (inst_size < 4) return false;
-
-    instruction.command = read_le<uint16_t>(inst_payload);
-    instruction.dataType = read_le<uint16_t>(inst_payload + 2);
-    instruction.is_continuous = (instruction.dataType == 0x0014);
-    size_t offset = 4;
-
-    bool is_response = (header.sourceOfFrame == 0x11);
-    bool is_read_cmd = (instruction.command == 0x0054 || instruction.command == 0x0055);
-    bool is_write_cmd = (instruction.command == 0x0058 || instruction.command == 0x0059);
-
-    if (is_read_cmd || is_write_cmd) {
-        if (inst_size < offset + 2) return false;
-        instruction.reserved = read_le<uint16_t>(inst_payload + offset);
-        offset += 2;
-
-        if (is_response) {
-            if (inst_size < offset + 4) return false;
-            instruction.errorStatus = read_le<uint16_t>(inst_payload + offset);
-            instruction.errorInfoOrBlockCount = read_le<uint16_t>(inst_payload + offset + 2);
-            offset += 4;
-
-            if (instruction.errorStatus == 0) {
-                if (instruction.is_continuous) {
-                    if (inst_size < offset + 2) return false;
-                    instruction.dataSize = read_le<uint16_t>(inst_payload + offset);
-                    offset += 2;
-                    if (inst_size < offset + instruction.dataSize) return false;
-                    instruction.continuousReadData.assign(inst_payload + offset, 
-                                                         inst_payload + offset + instruction.dataSize);
-                    offset += instruction.dataSize;
-                } else {
-                    instruction.blockCount = instruction.errorInfoOrBlockCount;
-                    for (uint16_t i = 0; i < instruction.blockCount; ++i) {
-                        if (inst_size < offset + 2) return false;
-                        uint16_t data_len = read_le<uint16_t>(inst_payload + offset);
-                        offset += 2;
-                        if (inst_size < offset + data_len) return false;
-                        std::vector<uint8_t> data_bytes(inst_payload + offset, 
-                                                        inst_payload + offset + data_len);
-                        instruction.readData.push_back({data_len, std::move(data_bytes)});
-                        offset += data_len;
-                    }
-                }
-            }
-        } else {
-            if (inst_size < offset + 2) return false;
-            instruction.blockCount = read_le<uint16_t>(inst_payload + offset);
-            offset += 2;
-
-            if (instruction.is_continuous) {
-                if (instruction.blockCount != 1) return false;
-                if (inst_size < offset + 2) return false;
-                uint16_t var_len = read_le<uint16_t>(inst_payload + offset);
-                offset += 2;
-                if (inst_size < offset + var_len) return false;
-                instruction.variableName.assign(reinterpret_cast<const char*>(inst_payload + offset), var_len);
-                offset += var_len;
-
-                if (is_read_cmd) {
-                    if (inst_size < offset + 2) return false;
-                    instruction.dataSize = read_le<uint16_t>(inst_payload + offset);
-                    offset += 2;
-                } else {
-                    if (inst_size < offset + 2) return false;
-                    instruction.dataSize = read_le<uint16_t>(inst_payload + offset);
-                    offset += 2;
-                    if (inst_size < offset + instruction.dataSize) return false;
-                    instruction.continuousReadData.assign(inst_payload + offset, 
-                                                         inst_payload + offset + instruction.dataSize);
-                    offset += instruction.dataSize;
-                }
-            } else {
-                for (uint16_t i = 0; i < instruction.blockCount; ++i) {
-                    if (inst_size < offset + 2) return false;
-                    uint16_t var_len = read_le<uint16_t>(inst_payload + offset);
-                    offset += 2;
-                    if (inst_size < offset + var_len) return false;
-                    std::string var_name(reinterpret_cast<const char*>(inst_payload + offset), var_len);
-                    instruction.variables.push_back({var_len, std::move(var_name)});
-                    offset += var_len;
-                }
-
-                if (is_write_cmd) {
-                    for (uint16_t i = 0; i < instruction.blockCount; ++i) {
-                        if (inst_size < offset + 2) return false;
-                        uint16_t data_len = read_le<uint16_t>(inst_payload + offset);
-                        offset += 2;
-                        if (inst_size < offset + data_len) return false;
-                        std::vector<uint8_t> data_bytes(inst_payload + offset, 
-                                                        inst_payload + offset + data_len);
-                        instruction.writeData.push_back({data_len, std::move(data_bytes)});
-                        offset += data_len;
-                    }
-                }
-            }
-        }
-    } else {
+    if (inst_size < 4) {
+        std::cerr << "[XGT] Instruction too short: " << inst_size << " bytes" << std::endl;
         return false;
     }
 
-    return offset == inst_size;
+    // 명령어와 데이터 타입 읽기
+    instruction.command = read_le<uint16_t>(inst_payload);
+    instruction.dataType = read_le<uint16_t>(inst_payload + 2);
+    instruction.is_continuous = (instruction.dataType == XGT_DTYPE_CONTINUOUS);
+    size_t offset = 4;
+
+    // 요청/응답 판별
+    bool is_response = (header.sourceOfFrame == 0x11);
+    bool is_request = (header.sourceOfFrame == 0x33);
+    bool is_read_cmd = (instruction.command == XGT_CMD_READ_REQ || 
+                       instruction.command == XGT_CMD_READ_RESP);
+    bool is_write_cmd = (instruction.command == XGT_CMD_WRITE_REQ || 
+                        instruction.command == XGT_CMD_WRITE_RESP);
+
+    if (!is_read_cmd && !is_write_cmd) {
+        std::cerr << "[XGT] Unknown command: 0x" << std::hex << instruction.command << std::endl;
+        return false;
+    }
+
+    // Reserved 필드 (2 bytes)
+    if (inst_size < offset + 2) return false;
+    instruction.reserved = read_le<uint16_t>(inst_payload + offset);
+    offset += 2;
+
+    // === 응답 프레임 파싱 ===
+    if (is_response) {
+        // 에러 상태 (2 bytes)
+        if (inst_size < offset + 2) return false;
+        instruction.errorStatus = read_le<uint16_t>(inst_payload + offset);
+        offset += 2;
+
+        // 블록 개수 또는 에러 정보 (2 bytes)
+        if (inst_size < offset + 2) return false;
+        instruction.errorInfoOrBlockCount = read_le<uint16_t>(inst_payload + offset);
+        offset += 2;
+
+        // 에러 발생 시 종료
+        if (instruction.errorStatus != XGT_ERROR_STATUS_OK) {
+            std::cerr << "[XGT] Error status: 0x" << std::hex << instruction.errorStatus 
+                      << ", Error info: 0x" << instruction.errorInfoOrBlockCount << std::endl;
+            return true;  // 에러도 유효한 응답
+        }
+
+        // 정상 응답 데이터 파싱
+        if (is_read_cmd) {
+            if (instruction.is_continuous) {
+                // === 연속 읽기 응답 ===
+                // 블록 개수는 이미 읽음 (항상 1)
+                
+                // 데이터 크기 (2 bytes)
+                if (inst_size < offset + 2) {
+                    std::cerr << "[XGT] Missing data size for continuous read response" << std::endl;
+                    return false;
+                }
+                instruction.dataSize = read_le<uint16_t>(inst_payload + offset);
+                offset += 2;
+
+                // 데이터 읽기
+                if (inst_size < offset + instruction.dataSize) {
+                    std::cerr << "[XGT] Insufficient data: expected " << instruction.dataSize 
+                              << ", available " << (inst_size - offset) << std::endl;
+                    return false;
+                }
+                instruction.continuousReadData.assign(inst_payload + offset, 
+                                                     inst_payload + offset + instruction.dataSize);
+                offset += instruction.dataSize;
+            } else {
+                // === 개별 읽기 응답 ===
+                instruction.blockCount = instruction.errorInfoOrBlockCount;
+                
+                for (uint16_t i = 0; i < instruction.blockCount; ++i) {
+                    // 데이터 길이 (2 bytes)
+                    if (inst_size < offset + 2) {
+                        std::cerr << "[XGT] Missing data length for block " << i << std::endl;
+                        return false;
+                    }
+                    uint16_t data_len = read_le<uint16_t>(inst_payload + offset);
+                    offset += 2;
+
+                    // 데이터 읽기
+                    if (inst_size < offset + data_len) {
+                        std::cerr << "[XGT] Insufficient data for block " << i << std::endl;
+                        return false;
+                    }
+                    std::vector<uint8_t> data_bytes(inst_payload + offset, 
+                                                    inst_payload + offset + data_len);
+                    instruction.readData.push_back({data_len, std::move(data_bytes)});
+                    offset += data_len;
+                }
+            }
+        } else {
+            // === 쓰기 응답 ===
+            // 쓰기 응답에는 데이터가 없음, 블록 개수만 있음
+            instruction.blockCount = instruction.errorInfoOrBlockCount;
+        }
+    }
+    // === 요청 프레임 파싱 ===
+    else if (is_request) {
+        // 블록 개수 (2 bytes)
+        if (inst_size < offset + 2) return false;
+        instruction.blockCount = read_le<uint16_t>(inst_payload + offset);
+        offset += 2;
+
+        if (instruction.is_continuous) {
+            // === 연속 읽기/쓰기 요청 ===
+            if (instruction.blockCount != 1) {
+                std::cerr << "[XGT] Continuous request must have blockCount=1, got " 
+                          << instruction.blockCount << std::endl;
+                return false;
+            }
+
+            // 변수명 길이 (2 bytes)
+            if (inst_size < offset + 2) return false;
+            uint16_t var_len = read_le<uint16_t>(inst_payload + offset);
+            offset += 2;
+
+            // 변수명 읽기
+            if (inst_size < offset + var_len) {
+                std::cerr << "[XGT] Insufficient space for variable name" << std::endl;
+                return false;
+            }
+            instruction.variableName.assign(reinterpret_cast<const char*>(inst_payload + offset), var_len);
+            offset += var_len;
+
+            // 연속 읽기/쓰기는 반드시 Byte 타입 변수여야 함 (%MB, %DB, %PB)
+            if (var_len >= 3) {
+                char type_indicator = instruction.variableName[2];
+                if (type_indicator != 'B' && type_indicator != 'b') {
+                    std::cerr << "[XGT] Continuous read/write requires Byte type variable (e.g., %MB, %DB), got: " 
+                              << instruction.variableName << std::endl;
+                    // Warning만 출력하고 계속 진행 (일부 구현은 허용할 수 있음)
+                }
+            }
+
+            // 데이터 크기 (2 bytes)
+            if (inst_size < offset + 2) return false;
+            instruction.dataSize = read_le<uint16_t>(inst_payload + offset);
+            offset += 2;
+
+            if (is_write_cmd) {
+                // 연속 쓰기: 데이터 읽기
+                if (inst_size < offset + instruction.dataSize) {
+                    std::cerr << "[XGT] Insufficient write data" << std::endl;
+                    return false;
+                }
+                instruction.continuousReadData.assign(inst_payload + offset, 
+                                                     inst_payload + offset + instruction.dataSize);
+                offset += instruction.dataSize;
+            }
+            // 연속 읽기 요청은 데이터 없음
+        } else {
+            // === 개별 읽기/쓰기 요청 ===
+            
+            // 1단계: 모든 변수명 읽기
+            for (uint16_t i = 0; i < instruction.blockCount; ++i) {
+                // 변수명 길이 (2 bytes)
+                if (inst_size < offset + 2) {
+                    std::cerr << "[XGT] Missing variable length for block " << i << std::endl;
+                    return false;
+                }
+                uint16_t var_len = read_le<uint16_t>(inst_payload + offset);
+                offset += 2;
+
+                // 변수명 읽기
+                if (inst_size < offset + var_len) {
+                    std::cerr << "[XGT] Insufficient space for variable " << i << std::endl;
+                    return false;
+                }
+                std::string var_name(reinterpret_cast<const char*>(inst_payload + offset), var_len);
+                instruction.variables.push_back({var_len, std::move(var_name)});
+                offset += var_len;
+            }
+
+            // 2단계: 쓰기 요청인 경우 모든 데이터 읽기
+            if (is_write_cmd) {
+                for (uint16_t i = 0; i < instruction.blockCount; ++i) {
+                    // 데이터 길이 (2 bytes)
+                    if (inst_size < offset + 2) {
+                        std::cerr << "[XGT] Missing data length for block " << i << std::endl;
+                        return false;
+                    }
+                    uint16_t data_len = read_le<uint16_t>(inst_payload + offset);
+                    offset += 2;
+
+                    // 데이터 읽기
+                    if (inst_size < offset + data_len) {
+                        std::cerr << "[XGT] Insufficient write data for block " << i << std::endl;
+                        return false;
+                    }
+                    std::vector<uint8_t> data_bytes(inst_payload + offset, 
+                                                    inst_payload + offset + data_len);
+                    instruction.writeData.push_back({data_len, std::move(data_bytes)});
+                    offset += data_len;
+                }
+            }
+            // 개별 읽기 요청은 데이터 없음
+        }
+    } else {
+        std::cerr << "[XGT] Invalid source of frame: 0x" << std::hex 
+                  << (int)header.sourceOfFrame << std::endl;
+        return false;
+    }
+
+    // 파싱 완료 검증
+    if (offset != inst_size) {
+        std::cerr << "[XGT] Parsing mismatch: parsed " << offset 
+                  << " bytes, expected " << inst_size << " bytes" << std::endl;
+        return false;
+    }
+
+    return true;
 }
 
 void XgtFenParser::parse(const PacketInfo& info) {

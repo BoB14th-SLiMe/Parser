@@ -48,17 +48,14 @@ RUN chmod +x /app/parser
 # 로그 디렉토리 생성
 RUN mkdir -p /app/logs
 
-# 출력 디렉토리 생성 (실제 parser가 사용하는 경로)
-RUN mkdir -p /app/output
-
 # 출력 디렉토리 생성 (config.json에 설정된 경로)
-RUN mkdir -p /data/parser-output
+RUN mkdir -p /data/output
 
 # 환경 변수 설정 (docker-compose.yml에서 덮어쓰기 가능)
 ENV REDIS_HOST=redis
 ENV REDIS_PORT=6379
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-ENV OUTPUT_DIR=/data/parser-output
+ENV OUTPUT_DIR=/data/output
 # NETWORK_INTERFACE는 docker-compose.yml에서 설정
 ENV BPF_FILTER=""
 ENV ROLLING_INTERVAL=30
