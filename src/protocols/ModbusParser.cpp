@@ -135,13 +135,17 @@ void ModbusParser::parse(const PacketInfo& info) {
                                     record.modbus_fc, reg_addr);
                                 reg_record.modbus_translated_addr = translated_addr;
                                 reg_record.modbus_description = m_assetManager.getDescription(translated_addr);
-                                
-                                // JSON details
+
+                                // JSON details with description
                                 std::stringstream details_ss;
-                                details_ss << R"({"tid":)" << trans_id 
+                                details_ss << R"({"tid":)" << trans_id
                                           << R"(,"pdu":{"fc":)" << (int)current_fc
                                           << R"(,"bc":)" << (int)byte_count
-                                          << R"(,"regs":{")" << reg_addr << R"(":)" << reg_value << R"(}}})";
+                                          << R"(,"regs":{")" << reg_addr << R"(":)" << reg_value << R"(})";
+                                if (!reg_record.modbus_description.empty()) {
+                                    details_ss << R"(,"description":")" << reg_record.modbus_description << R"(")";
+                                }
+                                details_ss << "}}";
                                 reg_record.details_json = details_ss.str();
                                 
                                 addUnifiedRecord(reg_record);
@@ -209,6 +213,9 @@ void ModbusParser::parse(const PacketInfo& info) {
     }
     if (!record.modbus_val.empty()) {
         details_ss << R"(,"val":)" << record.modbus_val;
+    }
+    if (!record.modbus_description.empty()) {
+        details_ss << R"(,"description":")" << record.modbus_description << R"(")";
     }
     details_ss << "}}";
     record.details_json = details_ss.str();

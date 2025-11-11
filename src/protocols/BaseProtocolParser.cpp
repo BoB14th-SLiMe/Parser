@@ -1,5 +1,6 @@
 #include "BaseProtocolParser.h"
 #include "../UnifiedWriter.h"
+#include "../AssetManager.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -46,6 +47,22 @@ UnifiedRecord BaseProtocolParser::createUnifiedRecord(const PacketInfo& info, co
     record.ak = std::to_string(info.tcp_ack);
     record.fl = std::to_string((int)info.tcp_flags);
     record.dir = direction;
+
+    // 자산 정보 추가
+    if (m_asset_manager) {
+        std::string src_device = m_asset_manager->getDeviceName(info.src_ip);
+        std::string dst_device = m_asset_manager->getDeviceName(info.dst_ip);
+
+        if (!src_device.empty()) {
+            record.src_asset_name = src_device;
+            record.src_asset_id = info.src_ip;
+        }
+        if (!dst_device.empty()) {
+            record.dst_asset_name = dst_device;
+            record.dst_asset_id = info.dst_ip;
+        }
+    }
+
     return record;
 }
 

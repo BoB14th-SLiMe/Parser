@@ -145,12 +145,17 @@ void PacketParser::createParsersForWorker(int worker_id) {
     parsers.push_back(std::make_unique<GenericParser>("bacnet"));
     parsers.push_back(std::make_unique<UnknownParser>());
 
+    // AssetManager 설정 (모든 파서에)
+    for (const auto& parser : parsers) {
+        parser->setAssetManager(&m_assetManager);
+    }
+
     // 파일 출력이 활성화된 경우만 UnifiedWriter 설정
     if (!m_disable_file_output && m_unified_writer) {
         for (const auto& parser : parsers) {
             parser->setUnifiedWriter(m_unified_writer.get());
         }
-        
+
         // 첫 번째 워커만 백엔드 콜백 설정
         if (worker_id == 0) {
             m_unified_writer->setBackendCallback(
@@ -252,34 +257,40 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             }
         }
         
-        // Redis Stream으로 전송 (ML/DL 파이프라인용)
+        // Redis Stream으로 전송 (ML/DL 파이프라인용) - JSONL 형식과 동일하게
         if (m_use_redis && m_redis_cache->isConnected()) {
             ParsedPacketData redis_data;
             redis_data.timestamp = record.timestamp;
             redis_data.protocol = record.protocol;
-            redis_data.src_ip = record.sip;
-            redis_data.dst_ip = record.dip;
-            
-            try {
-                redis_data.src_port = record.sp.empty() ? 0 : std::stoi(record.sp);
-                redis_data.dst_port = record.dp.empty() ? 0 : std::stoi(record.dp);
-            } catch (const std::exception& e) {
-                std::cerr << "[WARN] Port parsing error for Redis: " << e.what() << std::endl;
-                redis_data.src_port = 0;
-                redis_data.dst_port = 0;
-            }
-            
-            redis_data.src_mac = record.smac;
-            redis_data.dst_mac = record.dmac;
-            
+
+            // JSONL 형식과 동일한 짧은 필드명 사용
+            redis_data.smac = record.smac;
+            redis_data.dmac = record.dmac;
+            redis_data.sip = record.sip;
+            redis_data.sp = record.sp;
+            redis_data.dip = record.dip;
+            redis_data.dp = record.dp;
+            redis_data.sq = record.sq;
+            redis_data.ak = record.ak;
+            redis_data.fl = record.fl;
+            redis_data.dir = record.dir;
+
+            // 자산 정보 추가
+            redis_data.src_asset_id = record.src_asset_id;
+            redis_data.src_asset_name = record.src_asset_name;
+            redis_data.src_asset_group = record.src_asset_group;
+            redis_data.src_asset_location = record.src_asset_location;
+            redis_data.dst_asset_id = record.dst_asset_id;
+            redis_data.dst_asset_name = record.dst_asset_name;
+            redis_data.dst_asset_group = record.dst_asset_group;
+            redis_data.dst_asset_location = record.dst_asset_location;
+
             try {
                 redis_data.protocol_details = json::parse(record.details_json);
             } catch (const std::exception& e) {
                 redis_data.protocol_details = json::object();
             }
-            
-            redis_data.features = json::object();
-            
+
             std::string stream_name = RedisKeys::protocolStream(record.protocol);
             if (!m_redis_cache->pushToStream(stream_name, redis_data)) {
                 std::cerr << "[WARN] Failed to push to Redis stream" << std::endl;

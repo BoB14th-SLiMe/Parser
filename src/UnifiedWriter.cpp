@@ -222,8 +222,17 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
                   << R"("sq":)" << record.sq << R"(,)"
                   << R"("ak":)" << record.ak << R"(,)"
                   << R"("fl":)" << record.fl << R"(,)"
-                  << R"("dir":")" << record.dir << R"(",)"
-                  << R"("d":)" << record.details_json << R"(})" << std::endl;
+                  << R"("dir":")" << record.dir << R"(",)";
+
+        // 자산 정보 추가 (문자열로만)
+        if (!record.src_asset_name.empty()) {
+            jsonl_out << R"("src_asset":")" << record.src_asset_name << R"(",)";
+        }
+        if (!record.dst_asset_name.empty()) {
+            jsonl_out << R"("dst_asset":")" << record.dst_asset_name << R"(",)";
+        }
+
+        jsonl_out << R"("d":)" << record.details_json << R"(})" << std::endl;
     }
     
     csv_out.close();

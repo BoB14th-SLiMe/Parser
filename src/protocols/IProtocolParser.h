@@ -8,6 +8,7 @@
 
 // Forward declaration
 class UnifiedWriter;
+class AssetManager;
 struct UnifiedRecord;
 
 // Packet information structure
@@ -36,8 +37,9 @@ public:
     virtual std::string getName() const = 0;
     virtual bool isProtocol(const PacketInfo& info) const = 0;
     virtual void parse(const PacketInfo& info) = 0;
-    
+
     virtual void setUnifiedWriter(UnifiedWriter* writer) = 0;
+    virtual void setAssetManager(AssetManager* assetManager) = 0;
     virtual void setDirectBackendCallback(std::function<void(const UnifiedRecord&)> callback) = 0;
 };
 
