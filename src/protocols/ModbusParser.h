@@ -2,34 +2,50 @@
 #define MODBUS_PARSER_H
 
 #include "BaseProtocolParser.h"
+#include "../AssetManager.h"
 #include <map>
-#include <string>
+#include <chrono>
 
-// Modbus 요청 상태를 추적하기 위한 내부 구조체
-// (ModbusParser.cpp의 parse 함수에서 응답 파싱 시 사용됨)
 struct ModbusRequestInfo {
     uint8_t function_code = 0;
     uint16_t start_address = 0;
+    std::chrono::steady_clock::time_point timestamp;
 };
 
 class ModbusParser : public BaseProtocolParser {
 public:
-    ModbusParser(); // <- 1번 오류 해결 (생성자 선언)
+    explicit ModbusParser(AssetManager& assetManager);
     ~ModbusParser() override;
     
     std::string getName() const override;
-
-    // <- 2번 오류 해결 (인터페이스와 일치하는 시그니처 선언)
-    bool isProtocol(const u_char* payload, int size) const override;
-    
+    bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
-    void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
-    // parse 함수에서 사용되는 멤버 변수
-    // FlowKey: "ClientIP:ClientPort->ServerIP:ServerPort"
-    // RequestKey: (TransactionID << 8) | FunctionCode
+    AssetManager& m_assetManager;
     std::map<std::string, std::map<uint32_t, ModbusRequestInfo>> m_pending_requests;
+    
+    // 타임아웃 정리 (선택사항 - 프로덕션에서 사용)
+    std::chrono::steady_clock::time_point m_last_cleanup = std::chrono::steady_clock::now();
+    
+    void cleanupOldRequests() {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_cleanup).count() < 60) {
+            return; // 1분마다만 정리
+        }
+        
+        for (auto& flow_pair : m_pending_requests) {
+            for (auto it = flow_pair.second.begin(); it != flow_pair.second.end();) {
+                // 5분 이상 된 요청 삭제
+                if (std::chrono::duration_cast<std::chrono::minutes>(now - it->second.timestamp).count() > 5) {
+                    it = flow_pair.second.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        m_last_cleanup = now;
+    }
 };
 
 #endif // MODBUS_PARSER_H

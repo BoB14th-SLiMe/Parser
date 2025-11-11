@@ -1,52 +1,31 @@
 #include "ArpParser.h"
+#include "../UnifiedWriter.h"
 #include "../network/network_headers.h"
 #include <sstream>
-#include <iomanip>
-#include <cstring>
-#include <ctime>
-#include <utility> // for std::pair
-#include <tuple>   // for std::tuple
 
-// Helper Function to format timestamp to ISO 8601 (Cross-platform)
-static std::string format_timestamp_arp(const struct timeval& ts) {
-    char buf[sizeof "2011-10-08T07:07:09.000000Z"];
-    char buft[sizeof "2011-10-08T07:07:09"];
-    time_t sec = ts.tv_sec;
-    struct tm gmt;
-
-    // 플랫폼에 맞는 스레드 안전한 시간 변환 함수 사용
-    #ifdef _WIN32
-        gmtime_s(&gmt, &sec);
-    #else
-        gmtime_r(&sec, &gmt);
-    #endif
-
-    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%S", &gmt);
-    // Windows에서는 ts.tv_usec가 long 타입일 수 있으므로 int로 캐스팅
-    snprintf(buf, sizeof buf, "%.*s.%06dZ", (int)sizeof(buft) - 1, buft, (int)ts.tv_usec);
-    return std::string(buf);
-}
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 
 ArpParser::ArpParser() {}
 ArpParser::~ArpParser() {}
 
-std::string ArpParser::mac_to_string(const uint8_t* mac) {
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0');
-    for (int i = 0; i < 6; ++i) {
-        ss << std::setw(2) << static_cast<int>(mac[i]) << (i < 5 ? ":" : "");
-    }
-    return ss.str();
+std::string ArpParser::getName() const {
+    return "arp";
 }
 
-// --- 수정: 반환 타입을 std::tuple로 변경 ---
-std::tuple<std::string, uint16_t, std::string, std::string, std::string, std::string> 
-ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, int size) {
-    if (size < sizeof(ARPHeader)) {
-        return {"", 0, "", "", "", ""}; // Return empty tuple on failure
-    }
+bool ArpParser::isProtocol(const PacketInfo& info) const {
+    return info.eth_type == 0x0806;
+}
 
-    const ARPHeader* arp_header = reinterpret_cast<const ARPHeader*>(arp_payload);
+void ArpParser::parse(const PacketInfo& info) {
+    // size_t로 캐스팅하여 signed/unsigned 비교 경고 제거
+    if (static_cast<size_t>(info.payload_size) < sizeof(ARPHeader)) return;
+
+    const ARPHeader* arp_header = reinterpret_cast<const ARPHeader*>(info.payload);
 
     char spa_str[INET_ADDRSTRLEN];
     char tpa_str[INET_ADDRSTRLEN];
@@ -57,8 +36,21 @@ ArpParser::parse(const struct pcap_pkthdr* header, const u_char* arp_payload, in
     std::string sha_str = mac_to_string(arp_header->sha);
     std::string tha_str = mac_to_string(arp_header->tha);
 
-    std::string timestamp_str = format_timestamp_arp(header->ts);
+    std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
+
+    UnifiedRecord record = createUnifiedRecord(info, direction);
     
-    // --- 수정: 파싱된 필드를 튜플로 반환 ---
-    return {timestamp_str, op_code, sha_str, spa_str, tha_str, tpa_str};
+    record.arp_op = std::to_string(op_code);
+    record.arp_tmac = tha_str;
+    record.arp_tip = tpa_str;
+    
+    std::stringstream details_ss;
+    details_ss << R"({"op":)" << op_code 
+               << R"(,"smac":")" << sha_str << R"(",)"
+               << R"("sip":")" << spa_str << R"(",)"
+               << R"("tmac":")" << tha_str << R"(",)"
+               << R"("tip":")" << tpa_str << R"("})";
+    record.details_json = details_ss.str();
+    
+    addUnifiedRecord(record);
 }

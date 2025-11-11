@@ -1,14 +1,24 @@
 #include "BaseProtocolParser.h"
+#include "../UnifiedWriter.h"
 #include <sstream>
+#include <iomanip>
+#include <iostream>
+
+std::string BaseProtocolParser::mac_to_string(const uint8_t* mac) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 6; ++i) {
+        ss << std::setw(2) << static_cast<int>(mac[i]) << (i < 5 ? ":" : "");
+    }
+    return ss.str();
+}
 
 BaseProtocolParser::~BaseProtocolParser() {}
 
-// CSV 이스케이프 처리 구현
 std::string BaseProtocolParser::escape_csv(const std::string& s) {
-    // 이미 ""로 감싸진 JSON 문자열일 수 있으므로,
-    // 쉼표, 큰따옴표, 개행 문자가 포함된 경우에만 감싼다.
+    if (s.empty()) return "";
     if (s.find_first_of(",\"\n") == std::string::npos) {
-        return s; // 이스케이프가 필요 없는 경우
+        return s;
     }
     std::string result = "\"";
     for (char c : s) {
@@ -22,48 +32,31 @@ std::string BaseProtocolParser::escape_csv(const std::string& s) {
     return result;
 }
 
-// --- 수정: setOutputStream이 CSV 파일 크기를 확인하고 헤더 작성 ---
-void BaseProtocolParser::setOutputStream(std::ofstream* json_stream, std::ofstream* csv_stream) {
-    m_json_stream = json_stream;
-    m_csv_stream = csv_stream;
+UnifiedRecord BaseProtocolParser::createUnifiedRecord(const PacketInfo& info, const std::string& direction) {
+    UnifiedRecord record;
+    record.timestamp = info.timestamp;
+    record.protocol = getName();
+    record.smac = info.src_mac;
+    record.dmac = info.dst_mac;
+    record.sip = info.src_ip;
+    record.sp = std::to_string(info.src_port);
+    record.dip = info.dst_ip;
+    record.dp = std::to_string(info.dst_port);
+    record.sq = std::to_string(info.tcp_seq);
+    record.ak = std::to_string(info.tcp_ack);
+    record.fl = std::to_string((int)info.tcp_flags);
+    record.dir = direction;
+    return record;
+}
 
-    if (m_csv_stream && m_csv_stream->is_open()) {
-        m_csv_stream->seekp(0, std::ios::end);
-        if (m_csv_stream->tellp() == 0) {
-            // --- 수정: 가상 함수 writeCsvHeader 호출 ---
-            writeCsvHeader(*m_csv_stream);
-        }
+void BaseProtocolParser::addUnifiedRecord(const UnifiedRecord& record) {
+    // 파일 출력
+    if (m_unified_writer) {
+        m_unified_writer->addRecord(record);
     }
-}
-
-// --- 수정: 기본 CSV 헤더 구현 (Generic/Unknown 파서용) ---
-void BaseProtocolParser::writeCsvHeader(std::ofstream& csv_stream) {
-    csv_stream << "@timestamp,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,d\n";
-}
-
-
-// --- 추가: JSONL 작성 헬퍼 ---
-void BaseProtocolParser::writeJsonl(const PacketInfo& info, const std::string& direction, const std::string& details_json_content) {
-    if (m_json_stream && m_json_stream->is_open()) {
-        *m_json_stream << "{\"@timestamp\":\"" << info.timestamp << "\","
-                       << "\"smac\":\"" << info.src_mac << "\",\"dmac\":\"" << info.dst_mac << "\","
-                       << "\"sip\":\"" << info.src_ip << "\",\"sp\":" << info.src_port << ","
-                       << "\"dip\":\"" << info.dst_ip << "\",\"dp\":" << info.dst_port << ","
-                       << "\"sq\":" << info.tcp_seq << ",\"ak\":" << info.tcp_ack << ",\"fl\":" << (int)info.tcp_flags << ","
-                       << "\"dir\":\"" << direction << "\","
-                       << "\"d\":" << details_json_content << "}\n";
-    }
-}
-
-// --- 추가: 기본 CSV 라인 작성 헬퍼 (Generic/Unknown 파서용) ---
-void BaseProtocolParser::writeBaseCsvLine(std::ofstream& csv_stream, const PacketInfo& info, const std::string& direction, const std::string& details_json_content) {
-    if (m_csv_stream && m_csv_stream->is_open()) {
-        *m_csv_stream << info.timestamp << ","
-                      << info.src_mac << "," << info.dst_mac << ","
-                      << info.src_ip << "," << info.src_port << ","
-                      << info.dst_ip << "," << info.dst_port << ","
-                      << info.tcp_seq << "," << info.tcp_ack << "," << (int)info.tcp_flags << ","
-                      << direction << ","
-                      << escape_csv(details_json_content) << "\n";
+    
+    // 또는 직접 백엔드 전송
+    if (m_direct_backend_callback) {
+        m_direct_backend_callback(record);
     }
 }

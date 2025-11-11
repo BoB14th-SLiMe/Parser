@@ -1,20 +1,16 @@
 #ifndef TCP_SESSION_PARSER_H
 #define TCP_SESSION_PARSER_H
 
-#include <string>
-#include <sstream>
-#include <cstdint>
-#include <tuple>
+#include "BaseProtocolParser.h"
 
-class TcpSessionParser {
+class TcpSessionParser : public BaseProtocolParser {
 public:
     TcpSessionParser();
-    ~TcpSessionParser();
+    ~TcpSessionParser() override;
 
-    // --- 수정: JSON 문자열만 반환 (비어있는 JSON "{}") ---
-    std::string parse(uint32_t seq, uint32_t ack, uint8_t flags) const;
-    
-    std::string getName() const;
+    std::string getName() const override;
+    bool isProtocol(const PacketInfo& info) const override;
+    void parse(const PacketInfo& info) override;
 };
 
 #endif // TCP_SESSION_PARSER_H

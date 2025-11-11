@@ -2,29 +2,40 @@
 #define BASE_PROTOCOL_PARSER_H
 
 #include "IProtocolParser.h"
+#include <string>
+#include <fstream>
+
+// Forward declaration
+class UnifiedWriter;
+struct UnifiedRecord;
 
 class BaseProtocolParser : public IProtocolParser {
 public:
-    ~BaseProtocolParser() override;
-    
-    // --- 수정: setOutputStream이 CSV 헤더 확인 로직 포함 ---
-    void setOutputStream(std::ofstream* json_stream, std::ofstream* csv_stream) override;
+    virtual ~BaseProtocolParser();
 
-    // --- 수정: 기본 CSV 헤더 (d 컬럼만) ---
-    void writeCsvHeader(std::ofstream& csv_stream) override;
+    static std::string mac_to_string(const uint8_t* mac);
+    
+    void setUnifiedWriter(UnifiedWriter* writer) override {
+        m_unified_writer = writer;
+    }
+    
+    // 직접 백엔드 전송을 위한 콜백 설정
+    void setDirectBackendCallback(std::function<void(const UnifiedRecord&)> callback) {
+        m_direct_backend_callback = callback;
+    }
+
+    bool isProtocol(const PacketInfo& info) const override { 
+        (void)info;
+        return false; 
+    }
 
 protected:
-    // --- 추가: JSONL 작성을 위한 헬퍼 ---
-    void writeJsonl(const PacketInfo& info, const std::string& direction, const std::string& details_json_content);
-
-    // --- 추가: 기본 CSV 라인 (d 컬럼 포함) ---
-    void writeBaseCsvLine(std::ofstream& csv_stream, const PacketInfo& info, const std::string& direction, const std::string& details_json_content);
-
-    // CSV 이스케이프 헬퍼
+    UnifiedRecord createUnifiedRecord(const PacketInfo& info, const std::string& direction);
+    void addUnifiedRecord(const UnifiedRecord& record);
     std::string escape_csv(const std::string& s);
 
-    std::ofstream* m_json_stream = nullptr;
-    std::ofstream* m_csv_stream = nullptr;
+    UnifiedWriter* m_unified_writer = nullptr;
+    std::function<void(const UnifiedRecord&)> m_direct_backend_callback;  // 추가
 };
 
 #endif // BASE_PROTOCOL_PARSER_H

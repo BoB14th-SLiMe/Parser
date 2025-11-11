@@ -1,20 +1,16 @@
 #ifndef GENERIC_PARSER_H
 #define GENERIC_PARSER_H
 
-#include "BaseProtocolParser.h" // BaseProtocolParser를 포함
+#include "BaseProtocolParser.h"
 
-// BaseProtocolParser를 상속받도록 수정
 class GenericParser : public BaseProtocolParser {
 public:
     explicit GenericParser(const std::string& name);
     ~GenericParser() override;
 
     std::string getName() const override;
-    bool isProtocol(const u_char* payload, int size) const override;
+    bool isProtocol(const PacketInfo& info) const override;
     void parse(const PacketInfo& info) override;
-
-    // --- 추가: CSV 헤더 오버라이드 ---
-    void writeCsvHeader(std::ofstream& csv_stream) override;
 
 private:
     std::string m_name;
