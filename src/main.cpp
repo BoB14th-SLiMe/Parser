@@ -1,488 +1,402 @@
 #include <iostream>
-#include <thread>
-#include <vector>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <getopt.h>
 #include <chrono>
-#include <random>
-#include <iomanip>
+#include <thread>
 #include <pcap.h>
+#include "PacketParser.h"
 #include "RedisCache.h"
+#include "ElasticsearchClient.h"
 
 // ============================================================================
-// 전역 변수
+// Global Variables
 // ============================================================================
-std::atomic<bool> g_running{true};
-RedisCache* g_redis_cache = nullptr;
+static volatile bool g_running = true;
+static PacketParser* g_parser = nullptr;
 
 // ============================================================================
-// 패킷 큐 (Thread-Safe)
-// ============================================================================
-template<typename T>
-class ThreadSafeQueue {
-public:
-    ThreadSafeQueue(size_t max_size = 10000) : m_max_size(max_size) {}
-    
-    bool push(T&& item, int timeout_ms = 100) {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        
-        if (!m_cv_push.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                                [this] { return m_queue.size() < m_max_size; })) {
-            return false;  // Timeout or full
-        }
-        
-        m_queue.push(std::move(item));
-        m_cv_pop.notify_one();
-        return true;
-    }
-    
-    bool pop(T& item, int timeout_ms = 100) {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        
-        if (!m_cv_pop.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                               [this] { return !m_queue.empty(); })) {
-            return false;  // Timeout or empty
-        }
-        
-        item = std::move(m_queue.front());
-        m_queue.pop();
-        m_cv_push.notify_one();
-        return true;
-    }
-    
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_queue.size();
-    }
-    
-    bool empty() const {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_queue.empty();
-    }
-
-private:
-    std::queue<T> m_queue;
-    mutable std::mutex m_mutex;
-    std::condition_variable m_cv_push;
-    std::condition_variable m_cv_pop;
-    size_t m_max_size;
-};
-
-// 전역 패킷 큐
-ThreadSafeQueue<ParsedPacketData> g_packet_queue(10000);
-
-// ============================================================================
-// Signal 핸들러
+// Signal Handler
 // ============================================================================
 void signalHandler(int signal) {
-    std::cout << "\n[Main] Received signal " << signal << ", initiating shutdown..." << std::endl;
+    std::cout << "\n[Main] Received signal " << signal << ", shutting down..." << std::endl;
     g_running = false;
 }
 
 // ============================================================================
-// 패킷 생성기 (시뮬레이션용)
+// Helper Functions
 // ============================================================================
-class PacketGenerator {
-public:
-    PacketGenerator() : m_rng(std::random_device{}()) {}
-    
-    ParsedPacketData generatePacket() {
-        ParsedPacketData packet;
-        
-        // 타임스탬프
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
-        
-        char buffer[32];
-        std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", std::gmtime(&time_t));
-        packet.timestamp = std::string(buffer) + "." + std::to_string(ms.count()) + "Z";
-        
-        // 프로토콜 랜덤 선택
-        static const std::vector<std::string> protocols = {
-            "modbus_tcp", "s7comm", "xgt-fen", "mms", "dnp3", 
-            "ethernet_ip", "iec104", "opc_ua"
-        };
-        packet.protocol = protocols[m_rng() % protocols.size()];
-        
-        // IP 주소 생성
-        packet.src_ip = "192.168.10." + std::to_string(10 + (m_rng() % 80));
-        packet.dst_ip = "192.168.10." + std::to_string(10 + (m_rng() % 80));
-        
-        // 포트
-        packet.src_port = 1024 + (m_rng() % 64000);
-        packet.dst_port = getProtocolPort(packet.protocol);
-        
-        // MAC 주소
-        packet.src_mac = generateMacAddress();
-        packet.dst_mac = generateMacAddress();
-        
-        // 프로토콜별 상세 정보
-        packet.protocol_details = generateProtocolDetails(packet.protocol);
-        
-        // Features (ML용)
-        packet.features = {
-            {"packet_size", 64 + (m_rng() % 1400)},
-            {"flow_duration", (m_rng() % 10000)},
-            {"packet_rate", (m_rng() % 1000)}
-        };
-        
-        return packet;
-    }
+std::string getEnv(const char* name, const std::string& default_value = "") {
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : default_value;
+}
 
-private:
-    std::mt19937 m_rng;
-    
-    uint16_t getProtocolPort(const std::string& protocol) {
-        if (protocol == "modbus_tcp") return 502;
-        if (protocol == "s7comm") return 102;
-        if (protocol == "dnp3") return 20000;
-        if (protocol == "opc_ua") return 4840;
-        return 1024 + (m_rng() % 64000);
-    }
-    
-    std::string generateMacAddress() {
-        char mac[18];
-        snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
-                m_rng() % 256, m_rng() % 256, m_rng() % 256,
-                m_rng() % 256, m_rng() % 256, m_rng() % 256);
-        return std::string(mac);
-    }
-    
-    json generateProtocolDetails(const std::string& protocol) {
-        json details;
-        
-        if (protocol == "modbus_tcp") {
-            details = {
-                {"tid", m_rng() % 65536},
-                {"pdu", {
-                    {"fc", 3 + (m_rng() % 3)},  // Function code 3-5
-                    {"bc", (m_rng() % 100)},
-                    {"regs", {{std::to_string(m_rng() % 100), m_rng() % 65536}}}
-                }}
-            };
-        } else if (protocol == "s7comm") {
-            details = {
-                {"pdu_type", m_rng() % 3 + 1},
-                {"function", m_rng() % 8},
-                {"item_count", m_rng() % 10}
-            };
-        } else if (protocol == "xgt-fen") {
-            details = {
-                {"hdr", {
-                    {"companyId", "LSIS-XGT"},
-                    {"cpuInfo", 160},
-                    {"invokeId", m_rng() % 65536},
-                    {"len", 14 + (m_rng() % 100)}
-                }},
-                {"inst", {
-                    {"cmd", 84 + (m_rng() % 2)},
-                    {"dtype", 20},
-                    {"dataSize", m_rng() % 100}
-                }}
-            };
-        } else if (protocol == "mms") {
-            details = {
-                {"len", m_rng() % 256},
-                {"operation", m_rng() % 10}
-            };
-        }
-        
-        return details;
-    }
-};
+int getEnvInt(const char* name, int default_value = 0) {
+    const char* value = std::getenv(name);
+    return value ? std::atoi(value) : default_value;
+}
 
-// ============================================================================
-// 패킷 캡처 스레드 (실제 환경에서는 pcap 사용)
-// ============================================================================
-void captureThread() {
-    std::cout << "[Capture] Started packet capture simulation" << std::endl;
-    
-    PacketGenerator generator;
-    size_t total_captured = 0;
-    size_t total_dropped = 0;
-    auto last_log = std::chrono::steady_clock::now();
-    
-    while (g_running) {
-        // 패킷 생성 (실제로는 pcap_next_ex() 등 사용)
-        ParsedPacketData packet = generator.generatePacket();
-        
-        // 큐에 추가
-        if (g_packet_queue.push(std::move(packet), 10)) {
-            total_captured++;
-        } else {
-            total_dropped++;
-        }
-        
-        // 패킷 생성 속도 조절 (실제로는 네트워크 속도에 따라)
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-        
-        // 10초마다 통계
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log).count() >= 10) {
-            std::cout << "[Capture] Captured=" << total_captured 
-                      << ", Dropped=" << total_dropped 
-                      << ", Queue=" << g_packet_queue.size() << std::endl;
-            total_captured = 0;
-            total_dropped = 0;
-            last_log = now;
-        }
-    }
-    
-    std::cout << "[Capture] Stopped" << std::endl;
+bool getEnvBool(const char* name, bool default_value = false) {
+    const char* value = std::getenv(name);
+    if (!value) return default_value;
+    std::string str(value);
+    return (str == "true" || str == "1" || str == "yes");
+}
+
+void printUsage(const char* program) {
+    std::cout << "\nUsage: " << program << " [options]\n\n"
+              << "Options:\n"
+              << "  -i, --interface <name>    Network interface to capture (default: any)\n"
+              << "  -p, --pcap <file>         PCAP file to read (offline mode)\n"
+              << "  -f, --filter <bpf>        BPF filter string\n"
+              << "  -o, --output <dir>        Output directory (default: /data/output)\n"
+              << "  -r, --rolling <minutes>   File rolling interval in minutes (0 = no rolling)\n"
+              << "  --realtime                Realtime mode (no file output, only ES/Redis)\n"
+              << "  --threads <num>           Number of worker threads (0 = auto)\n"
+              << "  -h, --help                Show this help message\n\n"
+              << "Environment Variables:\n"
+              << "  NETWORK_INTERFACE         Network interface (default: any)\n"
+              << "  BPF_FILTER                BPF filter string\n"
+              << "  OUTPUT_DIR                Output directory\n"
+              << "  ROLLING_INTERVAL          Rolling interval in minutes\n"
+              << "  PARSER_MODE               'realtime' or 'with-files'\n"
+              << "  PARSER_THREADS            Number of worker threads\n"
+              << "\n"
+              << "  ELASTICSEARCH_HOST        Elasticsearch host (default: localhost)\n"
+              << "  ELASTICSEARCH_PORT        Elasticsearch port (default: 9200)\n"
+              << "  ELASTICSEARCH_USERNAME    Elasticsearch username\n"
+              << "  ELASTICSEARCH_PASSWORD    Elasticsearch password\n"
+              << "  ELASTICSEARCH_INDEX_PREFIX Index prefix (default: ics-packets)\n"
+              << "  ELASTICSEARCH_USE_HTTPS   Use HTTPS (true/false, default: false)\n"
+              << "  ES_BULK_SIZE              Bulk size (default: 100)\n"
+              << "  ES_BULK_FLUSH_INTERVAL_MS Flush interval in ms (default: 100)\n"
+              << "\n"
+              << "  REDIS_HOST                Redis host (default: localhost)\n"
+              << "  REDIS_PORT                Redis port (default: 6379)\n"
+              << "  REDIS_PASSWORD            Redis password\n"
+              << "  REDIS_DB                  Redis database number (default: 0)\n"
+              << "  REDIS_POOL_SIZE           Connection pool size (default: 8)\n"
+              << "  REDIS_ASYNC_WRITERS       Number of async writers (default: 2)\n"
+              << "  REDIS_ASYNC_QUEUE_SIZE    Async queue size (default: 10000)\n"
+              << "  REDIS_TIMEOUT_MS          Timeout in ms (default: 1000)\n"
+              << std::endl;
 }
 
 // ============================================================================
-// Worker 스레드 (패킷 처리)
+// Packet Callback
 // ============================================================================
-void workerThread(int worker_id, RedisCache& redis_cache) {
-    std::cout << "[Worker-" << worker_id << "] Started" << std::endl;
-    
-    size_t processed = 0;
-    size_t failed = 0;
-    auto last_log = std::chrono::steady_clock::now();
-    
-    while (g_running || !g_packet_queue.empty()) {
-        ParsedPacketData packet;
-        
-        // 큐에서 패킷 가져오기
-        if (!g_packet_queue.pop(packet, 100)) {
-            continue;  // Timeout or empty
-        }
-        
-        // === 핵심: Redis에 비동기 쓰기 ===
-        std::string stream_name = RedisKeys::protocolStream(packet.protocol);
-        
-        if (redis_cache.pushToStream(stream_name, packet)) {
-            processed++;
-        } else {
-            failed++;
-            
-            if (failed % 100 == 1) {
-                std::cerr << "[Worker-" << worker_id << "] ⚠️ Redis write failed! Count=" 
-                          << failed << std::endl;
-            }
-        }
-        
-        // 10초마다 통계
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log).count() >= 10) {
-            std::cout << "[Worker-" << worker_id << "] Processed=" << processed 
-                      << ", Failed=" << failed << std::endl;
-            processed = 0;
-            failed = 0;
-            last_log = now;
-        }
-    }
-    
-    std::cout << "[Worker-" << worker_id << "] Stopped (processed remaining packets)" << std::endl;
+void packetCallback(u_char* user, const struct pcap_pkthdr* header, const u_char* packet) {
+    if (!g_running) return;
+
+    PacketParser* parser = reinterpret_cast<PacketParser*>(user);
+    parser->parse(header, packet);
 }
 
 // ============================================================================
-// 통계 출력 스레드
-// ============================================================================
-void statsThread(RedisCache& redis_cache) {
-    std::cout << "[Stats] Started statistics monitoring" << std::endl;
-    
-    while (g_running) {
-        std::this_thread::sleep_for(std::chrono::seconds(30));
-        
-        if (!g_running) break;
-        
-        std::cout << "\n" << std::string(60, '=') << std::endl;
-        std::cout << "=== System Statistics at " 
-                  << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) 
-                  << " ===" << std::endl;
-        std::cout << std::string(60, '=') << std::endl;
-        
-        // Redis 통계
-        redis_cache.printStats();
-        
-        // 패킷 큐 상태
-        std::cout << "Packet Queue Size: " << g_packet_queue.size() << std::endl;
-        
-        // 프로토콜별 패킷 수
-        std::cout << "\nProtocol Statistics:" << std::endl;
-        std::vector<std::string> protocols = {
-            "modbus_tcp", "s7comm", "xgt-fen", "mms", "dnp3", 
-            "ethernet_ip", "iec104", "opc_ua"
-        };
-        
-        long long total_packets = 0;
-        for (const auto& protocol : protocols) {
-            long long count = redis_cache.getCounter(RedisKeys::statsCounter(protocol));
-            if (count > 0) {
-                std::cout << "  " << std::setw(15) << std::left << protocol 
-                          << ": " << std::setw(10) << std::right << count << " packets" << std::endl;
-                total_packets += count;
-            }
-        }
-        
-        std::cout << "  " << std::string(15, '-') << "   " << std::string(10, '-') << std::endl;
-        std::cout << "  " << std::setw(15) << std::left << "TOTAL" 
-                  << ": " << std::setw(10) << std::right << total_packets << " packets" << std::endl;
-        
-        std::cout << std::string(60, '=') << "\n" << std::endl;
-    }
-    
-    std::cout << "[Stats] Stopped" << std::endl;
-}
-
-// ============================================================================
-// Main 함수
+// Main Function
 // ============================================================================
 int main(int argc, char* argv[]) {
-    std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "===   Industrial Packet Parser with Redis (Async)   ===" << std::endl;
-    std::cout << std::string(60, '=') << "\n" << std::endl;
-    
-    // Signal 핸들러 등록
+    std::cout << "\n" << std::string(70, '=') << std::endl;
+    std::cout << "===   OT Security Monitoring System - Packet Parser   ===" << std::endl;
+    std::cout << std::string(70, '=') << "\n" << std::endl;
+
+    // 기본값 설정 (환경 변수 또는 기본값)
+    std::string interface = getEnv("NETWORK_INTERFACE", "any");
+    std::string bpf_filter = getEnv("BPF_FILTER", "");
+    std::string output_dir = getEnv("OUTPUT_DIR", "/data/output");
+    int rolling_interval = getEnvInt("ROLLING_INTERVAL", 0);
+    std::string parser_mode = getEnv("PARSER_MODE", "with-files");
+    bool realtime = (parser_mode == "realtime");
+    int num_threads = getEnvInt("PARSER_THREADS", 0);
+    std::string pcap_file = "";  // PCAP 파일 경로
+
+    // 커맨드 라인 인자 파싱
+    static struct option long_options[] = {
+        {"interface", required_argument, 0, 'i'},
+        {"pcap", required_argument, 0, 'p'},
+        {"filter", required_argument, 0, 'f'},
+        {"output", required_argument, 0, 'o'},
+        {"rolling", required_argument, 0, 'r'},
+        {"realtime", no_argument, 0, 1},
+        {"threads", required_argument, 0, 't'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    int option_index = 0;
+    while ((opt = getopt_long(argc, argv, "i:p:f:o:r:t:h", long_options, &option_index)) != -1) {
+        switch (opt) {
+            case 'i':
+                interface = optarg;
+                break;
+            case 'p':
+                pcap_file = optarg;
+                break;
+            case 'f':
+                bpf_filter = optarg;
+                break;
+            case 'o':
+                output_dir = optarg;
+                break;
+            case 'r':
+                rolling_interval = std::atoi(optarg);
+                break;
+            case 1:
+                realtime = true;
+                break;
+            case 't':
+                num_threads = std::atoi(optarg);
+                break;
+            case 'h':
+                printUsage(argv[0]);
+                return 0;
+            default:
+                printUsage(argv[0]);
+                return 1;
+        }
+    }
+
+    // Signal handler 등록
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
-    
+
+    // ========================================================================
+    // Elasticsearch 설정
+    // ========================================================================
+    ElasticsearchConfig es_config;
+    es_config.host = getEnv("ELASTICSEARCH_HOST", "localhost");
+    es_config.port = getEnvInt("ELASTICSEARCH_PORT", 9200);
+    es_config.username = getEnv("ELASTICSEARCH_USERNAME", "");
+    es_config.password = getEnv("ELASTICSEARCH_PASSWORD", "");
+    es_config.index_prefix = getEnv("ELASTICSEARCH_INDEX_PREFIX", "ics-packets");
+    es_config.use_https = getEnvBool("ELASTICSEARCH_USE_HTTPS", false);
+    es_config.bulk_size = getEnvInt("ES_BULK_SIZE", 100);
+    es_config.flush_interval_ms = getEnvInt("ES_BULK_FLUSH_INTERVAL_MS", 100);
+
+    // ========================================================================
     // Redis 설정
+    // ========================================================================
     RedisCacheConfig redis_config;
-    redis_config.host = "127.0.0.1";
-    redis_config.port = 6379;
-    redis_config.db = 0;
-    redis_config.pool_size = 8;           // Worker 수와 동일
-    redis_config.async_writers = 2;       // 비동기 Writer 2개
-    redis_config.async_queue_size = 10000; // 큐 크기
-    
-    std::cout << "[Main] Configuration:" << std::endl;
-    std::cout << "  Redis: " << redis_config.host << ":" << redis_config.port << std::endl;
-    std::cout << "  Connection Pool: " << redis_config.pool_size << " connections" << std::endl;
-    std::cout << "  Async Writers: " << redis_config.async_writers << " threads" << std::endl;
-    std::cout << "  Queue Size: " << redis_config.async_queue_size << std::endl;
+    redis_config.host = getEnv("REDIS_HOST", "localhost");
+    redis_config.port = getEnvInt("REDIS_PORT", 6379);
+    redis_config.password = getEnv("REDIS_PASSWORD", "");
+    redis_config.db = getEnvInt("REDIS_DB", 0);
+    redis_config.pool_size = getEnvInt("REDIS_POOL_SIZE", 8);
+    redis_config.async_writers = getEnvInt("REDIS_ASYNC_WRITERS", 2);
+    redis_config.async_queue_size = getEnvInt("REDIS_ASYNC_QUEUE_SIZE", 10000);
+    redis_config.timeout_ms = getEnvInt("REDIS_TIMEOUT_MS", 1000);
+
+    // ========================================================================
+    // 설정 출력
+    // ========================================================================
+    std::cout << "[Config] Configuration:" << std::endl;
+    if (!pcap_file.empty()) {
+        std::cout << "  Input Mode: PCAP File" << std::endl;
+        std::cout << "  PCAP File: " << pcap_file << std::endl;
+    } else {
+        std::cout << "  Input Mode: Live Capture" << std::endl;
+        std::cout << "  Network Interface: " << interface << std::endl;
+    }
+    if (!bpf_filter.empty()) {
+        std::cout << "  BPF Filter: " << bpf_filter << std::endl;
+    }
+    std::cout << "  Output Directory: " << output_dir << std::endl;
+    std::cout << "  Rolling Interval: " << rolling_interval << " minutes" << std::endl;
+    std::cout << "  Mode: " << (realtime ? "Realtime (no file output)" : "With file output") << std::endl;
+    std::cout << "  Worker Threads: " << (num_threads == 0 ? "Auto" : std::to_string(num_threads)) << std::endl;
     std::cout << std::endl;
-    
-    // Redis 초기화
-    RedisCache redis_cache(redis_config);
-    g_redis_cache = &redis_cache;
-    
-    std::cout << "[Main] Connecting to Redis..." << std::endl;
-    if (!redis_cache.connect()) {
-        std::cerr << "[Main] ✗✗✗ Redis connection failed!" << std::endl;
-        return 1;
-    }
-    
-    // Stream 초기화
-    std::cout << "[Main] Initializing protocol streams..." << std::endl;
-    redis_cache.createProtocolStreams();
-    
-    // 스레드 시작
-    int num_workers = 8;
-    std::vector<std::thread> workers;
-    
-    std::cout << "\n[Main] Starting threads..." << std::endl;
-    
-    // Capture 스레드
-    std::thread capture_thread(captureThread);
-    
-    // Worker 스레드들
-    std::cout << "[Main] Starting " << num_workers << " worker threads..." << std::endl;
-    for (int i = 0; i < num_workers; ++i) {
-        workers.emplace_back(workerThread, i, std::ref(redis_cache));
-    }
-    
-    // 통계 스레드
-    std::thread stats_thread(statsThread, std::ref(redis_cache));
-    
-    std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "===          System is running. Press Ctrl+C to stop         ===" << std::endl;
-    std::cout << std::string(60, '=') << "\n" << std::endl;
-    
-    // 메인 루프 (간단한 모니터링)
-    while (g_running) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    
-    // 종료 시작
-    std::cout << "\n[Main] Shutdown initiated..." << std::endl;
-    std::cout << "[Main] Waiting for capture thread..." << std::endl;
-    if (capture_thread.joinable()) {
-        capture_thread.join();
-    }
-    
-    std::cout << "[Main] Waiting for worker threads to finish remaining packets..." << std::endl;
-    for (auto& worker : workers) {
-        if (worker.joinable()) {
-            worker.join();
+
+    std::cout << "[Config] Elasticsearch:" << std::endl;
+    std::cout << "  Host: " << es_config.host << ":" << es_config.port << std::endl;
+    std::cout << "  Index Prefix: " << es_config.index_prefix << std::endl;
+    std::cout << "  HTTPS: " << (es_config.use_https ? "Yes" : "No") << std::endl;
+    std::cout << "  Bulk Size: " << es_config.bulk_size << std::endl;
+    std::cout << "  Flush Interval: " << es_config.flush_interval_ms << " ms" << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "[Config] Redis:" << std::endl;
+    std::cout << "  Host: " << redis_config.host << ":" << redis_config.port << std::endl;
+    std::cout << "  Database: " << redis_config.db << std::endl;
+    std::cout << "  Pool Size: " << redis_config.pool_size << std::endl;
+    std::cout << "  Async Writers: " << redis_config.async_writers << std::endl;
+    std::cout << std::endl;
+
+    // ========================================================================
+    // PacketParser 초기화
+    // ========================================================================
+    std::cout << "[Init] Initializing PacketParser..." << std::endl;
+    g_parser = new PacketParser(
+        output_dir,
+        rolling_interval,
+        num_threads,
+        &redis_config,
+        &es_config,
+        realtime  // disable_file_output
+    );
+
+    // ========================================================================
+    // Worker 스레드 시작
+    // ========================================================================
+    std::cout << "[Init] Starting worker threads..." << std::endl;
+    g_parser->startWorkers();
+
+    // ========================================================================
+    // pcap 초기화
+    // ========================================================================
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* handle;
+
+    if (!pcap_file.empty()) {
+        // PCAP 파일 모드
+        std::cout << "[PCAP] Opening PCAP file: " << pcap_file << std::endl;
+        handle = pcap_open_offline(pcap_file.c_str(), errbuf);
+        if (handle == nullptr) {
+            std::cerr << "[ERROR] Could not open PCAP file " << pcap_file << ": " << errbuf << std::endl;
+            delete g_parser;
+            return 1;
+        }
+    } else {
+        // 라이브 캡처 모드
+        std::cout << "[PCAP] Opening interface: " << interface << std::endl;
+        handle = pcap_open_live(interface.c_str(), 65535, 1, 1000, errbuf);
+        if (handle == nullptr) {
+            std::cerr << "[ERROR] Could not open device " << interface << ": " << errbuf << std::endl;
+            delete g_parser;
+            return 1;
         }
     }
-    
-    std::cout << "[Main] Waiting for stats thread..." << std::endl;
-    if (stats_thread.joinable()) {
-        stats_thread.join();
+
+    // BPF 필터 설정
+    if (!bpf_filter.empty()) {
+        struct bpf_program fp;
+        bpf_u_int32 net = 0;
+
+        std::cout << "[PCAP] Compiling BPF filter: " << bpf_filter << std::endl;
+        if (pcap_compile(handle, &fp, bpf_filter.c_str(), 0, net) == -1) {
+            std::cerr << "[ERROR] Could not compile filter: " << pcap_geterr(handle) << std::endl;
+            pcap_close(handle);
+            delete g_parser;
+            return 1;
+        }
+
+        if (pcap_setfilter(handle, &fp) == -1) {
+            std::cerr << "[ERROR] Could not set filter: " << pcap_geterr(handle) << std::endl;
+            pcap_freecode(&fp);
+            pcap_close(handle);
+            delete g_parser;
+            return 1;
+        }
+
+        pcap_freecode(&fp);
+        std::cout << "[PCAP] BPF filter applied successfully" << std::endl;
     }
-    
+
+    // ========================================================================
+    // 패킷 캡처 시작
+    // ========================================================================
+    std::cout << "\n" << std::string(70, '=') << std::endl;
+    if (!pcap_file.empty()) {
+        std::cout << "===  Processing PCAP file. Press Ctrl+C to stop...   ===" << std::endl;
+    } else {
+        std::cout << "===  Packet capture started. Press Ctrl+C to stop...  ===" << std::endl;
+    }
+    std::cout << std::string(70, '=') << "\n" << std::endl;
+
+    int packet_count = 0;
+    auto last_stats = std::chrono::steady_clock::now();
+
+    if (!pcap_file.empty()) {
+        // PCAP 파일 모드: 블로킹 방식으로 모든 패킷 처리
+        std::cout << "[PCAP] Reading packets from file..." << std::endl;
+        int result = pcap_loop(handle, 0, packetCallback, reinterpret_cast<u_char*>(g_parser));
+
+        if (result == -1) {
+            std::cerr << "[ERROR] pcap_loop error: " << pcap_geterr(handle) << std::endl;
+        } else if (result == -2) {
+            std::cout << "[PCAP] File processing interrupted by user" << std::endl;
+        } else {
+            std::cout << "[PCAP] File reading completed" << std::endl;
+        }
+
+        // PCAP 파일 모드: 큐에 있는 모든 패킷이 처리될 때까지 대기
+        std::cout << "[PCAP] Waiting for all packets to be processed..." << std::endl;
+        g_parser->waitForCompletion();
+        std::cout << "[PCAP] All packets processed successfully" << std::endl;
+    } else {
+        // 라이브 캡처 모드: non-blocking 방식
+        pcap_setnonblock(handle, 1, errbuf);
+
+        while (g_running) {
+            int result = pcap_dispatch(handle, 100, packetCallback, reinterpret_cast<u_char*>(g_parser));
+
+            if (result == -1) {
+                std::cerr << "[ERROR] pcap_dispatch error: " << pcap_geterr(handle) << std::endl;
+                break;
+            } else if (result == 0) {
+                // No packets, sleep briefly
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            } else {
+                packet_count += result;
+            }
+
+            // 통계 출력 (30초마다)
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - last_stats).count() >= 30) {
+                std::cout << "[Stats] Packets captured: " << packet_count << std::endl;
+
+                // Redis 통계
+                if (g_parser->getRedisCache() && g_parser->getRedisCache()->isConnected()) {
+                    g_parser->getRedisCache()->printStats();
+                }
+
+                packet_count = 0;
+                last_stats = now;
+            }
+        }
+    }
+
+    // ========================================================================
+    // 종료 처리
+    // ========================================================================
+    std::cout << "\n[Main] Shutting down..." << std::endl;
+
+    // pcap 종료
+    pcap_close(handle);
+    std::cout << "[PCAP] Closed" << std::endl;
+
+    // Worker 종료
+    std::cout << "[Main] Stopping workers..." << std::endl;
+    // PCAP 파일 모드에서는 이미 waitForCompletion()을 호출했으므로 바로 stopWorkers() 호출
+    if (pcap_file.empty()) {
+        // 라이브 캡처 모드에서만 waitForCompletion() 호출
+        g_parser->waitForCompletion();
+    }
+    g_parser->stopWorkers();
+
+    // 최종 flush
+    if (!realtime) {
+        std::cout << "[Main] Generating final output..." << std::endl;
+        g_parser->generateUnifiedOutput();
+    }
+
     // 최종 통계
-    std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "===              Final Statistics                    ===" << std::endl;
-    std::cout << std::string(60, '=') << std::endl;
-    redis_cache.printStats();
-    
-    std::cout << "\nProtocol Summary:" << std::endl;
-    std::vector<std::string> protocols = {
-        "modbus_tcp", "s7comm", "xgt-fen", "mms", "dnp3", 
-        "ethernet_ip", "iec104", "opc_ua"
-    };
-    
-    long long grand_total = 0;
-    for (const auto& protocol : protocols) {
-        long long count = redis_cache.getCounter(RedisKeys::statsCounter(protocol));
-        if (count > 0) {
-            std::cout << "  " << std::setw(15) << std::left << protocol 
-                      << ": " << std::setw(10) << std::right << count << std::endl;
-            grand_total += count;
-        }
+    std::cout << "\n" << std::string(70, '=') << std::endl;
+    std::cout << "===                   Final Statistics                    ===" << std::endl;
+    std::cout << std::string(70, '=') << std::endl;
+
+    if (g_parser->getRedisCache() && g_parser->getRedisCache()->isConnected()) {
+        g_parser->getRedisCache()->printStats();
     }
-    std::cout << "  " << std::string(15, '-') << "   " << std::string(10, '-') << std::endl;
-    std::cout << "  " << std::setw(15) << std::left << "TOTAL PROCESSED" 
-              << ": " << std::setw(10) << std::right << grand_total << std::endl;
-    
-    // Redis 연결 종료
-    std::cout << "\n[Main] Disconnecting from Redis..." << std::endl;
-    redis_cache.disconnect();
-    
-    std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "===           Shutdown complete. Goodbye!            ===" << std::endl;
-    std::cout << std::string(60, '=') << "\n" << std::endl;
-    
+
+    // Cleanup
+    delete g_parser;
+    g_parser = nullptr;
+
+    std::cout << "\n" << std::string(70, '=') << std::endl;
+    std::cout << "===               Shutdown complete. Goodbye!             ===" << std::endl;
+    std::cout << std::string(70, '=') << "\n" << std::endl;
+
     return 0;
 }
-
-/*
-==============================================================================
-컴파일 방법:
-==============================================================================
-
-g++ -o parser main.cpp RedisCache.cpp \
-    -std=c++17 -pthread \
-    -lhiredis -lpcap \
-    -I/usr/include/nlohmann \
-    -O2 -Wall -Wextra
-
-==============================================================================
-실행 방법:
-==============================================================================
-
-1. Redis 실행 확인:
-   redis-cli ping
-
-2. 파서 실행:
-   ./parser
-
-3. 모니터링 (다른 터미널):
-   redis-cli MONITOR
-   redis-cli INFO stats
-   redis-cli XLEN stream:protocol:modbus_tcp
-
-4. 종료:
-   Ctrl+C
-
-==============================================================================
-*/

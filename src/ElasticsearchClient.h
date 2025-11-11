@@ -18,8 +18,8 @@ struct ElasticsearchConfig {
     std::string username = "";
     std::string password = "";
     std::string index_prefix = "ics-packets";
-    int bulk_size = 100;
-    int flush_interval_ms = 5000;
+    int bulk_size = 50;  // 실시간 전송을 위해 50개로 감소
+    int flush_interval_ms = 1000;  // 1초마다 강제 flush
     bool use_https = false;
 };
 

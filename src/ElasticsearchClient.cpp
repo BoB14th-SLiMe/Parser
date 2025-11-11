@@ -8,14 +8,17 @@
 ElasticsearchClient::ElasticsearchClient(const ElasticsearchConfig& config)
     : m_config(config), m_curl(nullptr), m_connected(false), m_stop_flush(false) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    
+
     // 실시간 모드를 위한 기본값 조정
-    if (m_config.bulk_size == 0) {
-        m_config.bulk_size = 50;  // 더 작은 배치 사이즈
+    if (m_config.bulk_size == 0 || m_config.bulk_size > 50) {
+        m_config.bulk_size = 50;  // 실시간성을 위해 작은 배치 사이즈
     }
-    if (m_config.flush_interval_ms == 0) {
-        m_config.flush_interval_ms = 100;  // 100ms
+    if (m_config.flush_interval_ms == 0 || m_config.flush_interval_ms > 1000) {
+        m_config.flush_interval_ms = 1000;  // 1초마다 강제 flush
     }
+
+    std::cout << "[Elasticsearch] Configured: bulk_size=" << m_config.bulk_size
+              << ", flush_interval=" << m_config.flush_interval_ms << "ms" << std::endl;
 }
 
 ElasticsearchClient::~ElasticsearchClient() {
@@ -155,70 +158,80 @@ bool ElasticsearchClient::indexDocument(const std::string& index,
 
 bool ElasticsearchClient::addToBulk(const std::string& protocol, const json& document) {
     std::lock_guard<std::mutex> lock(m_bulk_mutex);
-    
+
     std::string index = getTimeBasedIndex(protocol);
-    
+
     json action = {
         {"index", {
             {"_index", index}
         }}
     };
-    
+
     m_bulk_buffer.push_back(action.dump());
     m_bulk_buffer.push_back(document.dump());
-    
-    // 버퍼가 작은 사이즈에 도달하면 즉시 전송 (50개 = 25개 문서)
+
+    // 버퍼가 설정된 사이즈에 도달하면 즉시 전송
     if (m_bulk_buffer.size() >= static_cast<size_t>(m_config.bulk_size * 2)) {
+        std::cout << "[Elasticsearch] Buffer full (" << m_bulk_buffer.size()/2
+                  << " docs), flushing..." << std::endl;
         return flushBulk();
     }
-    
+
     return true;
 }
 
 bool ElasticsearchClient::flushBulk() {
-    std::lock_guard<std::mutex> lock(m_bulk_mutex);
-    
+    // lock은 호출하는 쪽에서 이미 획득했으므로 여기서는 하지 않음
+
     if (m_bulk_buffer.empty()) return true;
-    if (!m_connected) return false;
-    
+    if (!m_connected) {
+        std::cerr << "[Elasticsearch] Not connected, cannot flush" << std::endl;
+        return false;
+    }
+
+    size_t doc_count = m_bulk_buffer.size() / 2;
+
     // NDJSON 형식으로 결합
     std::stringstream bulk_data;
     for (const auto& line : m_bulk_buffer) {
         bulk_data << line << "\n";
     }
-    
+
     std::string url = buildUrl("_bulk");
     std::string response;
     bool success = sendRequest(url, "POST", bulk_data.str(), response);
-    
+
     if (success) {
-        size_t doc_count = m_bulk_buffer.size() / 2;
-        // 너무 많은 로그 방지
-        if (doc_count >= 100) {
-            std::cout << "[Elasticsearch] Flushed " << doc_count << " documents" << std::endl;
-        }
+        std::cout << "[Elasticsearch] ✓ Flushed " << doc_count << " documents" << std::endl;
         m_bulk_buffer.clear();
     } else {
-        std::cerr << "[Elasticsearch] Bulk flush failed" << std::endl;
+        std::cerr << "[Elasticsearch] ✗ Bulk flush failed for " << doc_count << " documents" << std::endl;
+        // 실패한 경우에도 버퍼를 비워서 메모리 누수 방지
+        m_bulk_buffer.clear();
     }
-    
+
     return success;
 }
 
 void ElasticsearchClient::autoFlushLoop() {
+    std::cout << "[Elasticsearch] Auto-flush thread started (interval: "
+              << m_config.flush_interval_ms << "ms)" << std::endl;
+
     while (!m_stop_flush.load()) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(m_config.flush_interval_ms)
         );
-        
+
         // 버퍼에 데이터가 있으면 무조건 flush
-        {
-            std::lock_guard<std::mutex> lock(m_bulk_mutex);
-            if (!m_bulk_buffer.empty()) {
-                flushBulk();
-            }
+        std::lock_guard<std::mutex> lock(m_bulk_mutex);
+        if (!m_bulk_buffer.empty()) {
+            size_t doc_count = m_bulk_buffer.size() / 2;
+            std::cout << "[Elasticsearch] Auto-flushing " << doc_count << " documents..." << std::endl;
+            flushBulk();
         }
     }
+
+    std::cout << "[Elasticsearch] Auto-flush thread stopped" << std::endl;
 }
 
 bool ElasticsearchClient::createIndex(const std::string& index) {
