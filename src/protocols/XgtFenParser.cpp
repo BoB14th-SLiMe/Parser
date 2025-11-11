@@ -56,7 +56,7 @@ XgtFenParser::XgtFenParser(AssetManager& assetManager)
 XgtFenParser::~XgtFenParser() {}
 
 std::string XgtFenParser::getName() const {
-    return "xgt-fen";
+    return "xgt_fen";
 }
 
 bool XgtFenParser::isProtocol(const PacketInfo& info) const {

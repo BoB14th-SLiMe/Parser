@@ -101,13 +101,14 @@ void UnifiedWriter::addRecord(const UnifiedRecord& record) {
 
 void UnifiedWriter::writeCsvHeader(std::ofstream& out) {
     out << "@timestamp,protocol,smac,dmac,sip,sp,dip,dp,sq,ak,fl,dir,"
+        << "src_asset,dst_asset,"
         << "arp.op,arp.tmac,arp.tip,"
         << "dns.tid,dns.fl,dns.qc,dns.ac,"
         << "dnp3.len,dnp3.ctrl,dnp3.dest,dnp3.src,"
         << "len,"
         << "modbus.tid,modbus.fc,modbus.err,modbus.bc,modbus.addr,modbus.qty,modbus.val,modbus.regs.addr,modbus.regs.val,modbus.translated_addr,modbus.description,"
-        << "s7.prid,s7.ros,s7.fn,s7.ic,s7.syn,s7.tsz,s7.amt,s7.db,s7.ar,s7.addr,s7.rc,s7.len,s7.description,"
-        << "xgt.prid,xgt.companyId,xgt.plcinfo,xgt.cpuinfo,xgt.source,xgt.len,xgt.fenetpos,xgt.cmd,xgt.dtype,xgt.blkcnt,xgt.errstat,xgt.errinfo,xgt.vars,xgt.datasize,xgt.data,xgt.translated_addr,xgt.description\n";
+        << "s7comm.prid,s7comm.ros,s7comm.fn,s7comm.ic,s7comm.syn,s7comm.tsz,s7comm.amt,s7comm.db,s7comm.ar,s7comm.addr,s7comm.rc,s7comm.len,s7comm.description,"
+        << "xgt_fen.prid,xgt_fen.companyId,xgt_fen.plcinfo,xgt_fen.cpuinfo,xgt_fen.source,xgt_fen.len,xgt_fen.fenetpos,xgt_fen.cmd,xgt_fen.dtype,xgt_fen.blkcnt,xgt_fen.errstat,xgt_fen.errinfo,xgt_fen.vars,xgt_fen.datasize,xgt_fen.data,xgt_fen.translated_addr,xgt_fen.description\n";
 }
 
 void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
@@ -145,7 +146,7 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
     std::cout << "[INFO] Writing time slot: " << time_slot << " with " << records.size() << " records" << std::endl;
     
     for (const auto& record : records) {
-        // CSV 작성
+        // CSV 작성 (기존과 동일)
         csv_out << escapeCSV(record.timestamp) << ","
                 << escapeCSV(record.protocol) << ","
                 << escapeCSV(record.smac) << ","
@@ -158,6 +159,8 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
                 << escapeCSV(record.ak) << ","
                 << escapeCSV(record.fl) << ","
                 << escapeCSV(record.dir) << ","
+                << escapeCSV(record.src_asset_name) << ","
+                << escapeCSV(record.dst_asset_name) << ","
                 << escapeCSV(record.arp_op) << ","
                 << escapeCSV(record.arp_tmac) << ","
                 << escapeCSV(record.arp_tip) << ","
@@ -212,7 +215,7 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
                 << escapeCSV(record.xgt_translated_addr) << ","
                 << escapeCSV(record.xgt_description) << "\n";
         
-        // JSONL 작성
+        // JSONL 작성 - 프로토콜명을 키로 사용
         jsonl_out << R"({"@timestamp":")" << record.timestamp << R"(",)"
                   << R"("protocol":")" << record.protocol << R"(",)"
                   << R"("sip":")" << record.sip << R"(",)"
@@ -232,7 +235,12 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
             jsonl_out << R"("dst_asset":")" << record.dst_asset_name << R"(",)";
         }
 
-        jsonl_out << R"("d":)" << record.details_json << R"(})" << std::endl;
+        // ★ 변경: "d" 대신 프로토콜명을 키로 사용
+        // protocol 값에 하이픈이 있으면 밑줄로 변환 (예: "xgt-fen" -> "xgt_fen")
+        std::string protocol_key = record.protocol;
+        std::replace(protocol_key.begin(), protocol_key.end(), '-', '_');
+        
+        jsonl_out << R"(")" << protocol_key << R"(":)" << record.details_json << R"(})" << std::endl;
     }
     
     csv_out.close();

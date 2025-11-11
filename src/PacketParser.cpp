@@ -195,7 +195,7 @@ PacketParser::~PacketParser() {
 
 void PacketParser::sendToBackends(const UnifiedRecord& record) {
     try {
-        // Elasticsearch로 즉시 전송 (bulk에 추가)
+        // Elasticsearch로 즉시 전송 (기존과 동일)
         if (m_use_elasticsearch && m_elasticsearch->isConnected()) {
             json es_doc;
             es_doc["@timestamp"] = record.timestamp;
@@ -203,7 +203,7 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             es_doc["src_ip"] = record.sip;
             es_doc["dst_ip"] = record.dip;
             
-            // 포트 파싱 (빈 문자열 처리)
+            // 포트 파싱
             try {
                 es_doc["src_port"] = record.sp.empty() ? 0 : std::stoi(record.sp);
                 es_doc["dst_port"] = record.dp.empty() ? 0 : std::stoi(record.dp);
@@ -225,7 +225,7 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
                 es_doc["protocol_details"] = json::object();
             }
             
-            // 프로토콜별 중요 필드 추출 (대시보드 필터링용)
+            // 프로토콜별 중요 필드 추출 (기존과 동일)
             if (record.protocol == "modbus_tcp") {
                 if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
                 if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
@@ -238,7 +238,7 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
                 if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
             }
             
-            // 자산 정보 추가
+            // 자산 정보 추가 (기존과 동일)
             if (m_use_redis && m_redis_cache->isConnected()) {
                 AssetInfo src_asset = m_redis_cache->getAssetInfo(record.sip);
                 AssetInfo dst_asset = m_redis_cache->getAssetInfo(record.dip);
@@ -251,13 +251,12 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
                 }
             }
             
-            // Bulk에 추가 (100개 이상이면 자동 flush됨)
             if (!m_elasticsearch->addToBulk(record.protocol, es_doc)) {
                 std::cerr << "[WARN] Failed to add to Elasticsearch bulk" << std::endl;
             }
         }
         
-        // Redis Stream으로 전송 (ML/DL 파이프라인용) - JSONL 형식과 동일하게
+        // ★ Redis Stream으로 전송 - 프로토콜명을 키로 사용
         if (m_use_redis && m_redis_cache->isConnected()) {
             ParsedPacketData redis_data;
             redis_data.timestamp = record.timestamp;

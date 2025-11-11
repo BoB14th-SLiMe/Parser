@@ -26,8 +26,8 @@ static uint16_t safe_ntohs(const u_char* ptr) {
     return ntohs(val_n);
 }
 
-std::string ModbusParser::getName() const { 
-    return "modbus_tcp"; 
+std::string ModbusParser::getName() const {
+    return "modbus";
 }
 
 bool ModbusParser::isProtocol(const PacketInfo& info) const {
