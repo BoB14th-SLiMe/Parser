@@ -22,7 +22,6 @@ WORKDIR /build
 # 소스 코드 복사
 COPY CMakeLists.txt ./
 COPY src ./src
-COPY include ./include
 
 # 빌드
 RUN mkdir -p build && \
@@ -48,6 +47,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     tzdata \
+    redis-tools \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -56,14 +56,17 @@ WORKDIR /app
 COPY --from=builder /build/build/parser /usr/local/bin/parser
 RUN chmod +x /usr/local/bin/parser
 
-# Assets 디렉토리 복사
-COPY assets /app/assets
+# Assets 디렉토리 복사 (있는 경우)
+COPY assets* /app/assets/ || true
+
+# Config 파일 복사 (있는 경우)
+COPY config.json* /app/ || true
 
 # 출력 디렉토리 생성
-RUN mkdir -p /data/output
+RUN mkdir -p /data/output /app/logs
 
 # 볼륨 설정
-VOLUME ["/data/output", "/app/assets"]
+VOLUME ["/data/output", "/app/assets", "/app/logs"]
 
 # 헬스체크
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
