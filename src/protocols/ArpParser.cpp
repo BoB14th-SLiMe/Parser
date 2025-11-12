@@ -39,7 +39,10 @@ void ArpParser::parse(const PacketInfo& info) {
     std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
 
     UnifiedRecord record = createUnifiedRecord(info, direction);
-    
+
+    // Set payload length (common field for all protocols)
+    record.len = std::to_string(info.payload_size);
+
     record.arp_op = std::to_string(op_code);
     record.arp_tmac = tha_str;
     record.arp_tip = tpa_str;

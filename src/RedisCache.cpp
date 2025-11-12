@@ -146,25 +146,27 @@ AssetInfo RedisCache::getAssetInfo(const std::string& ip) {
 }
 
 // === 2. Redis Stream (비동기) ===
-bool RedisCache::pushToStream(const std::string& stream_name, 
+bool RedisCache::pushToStream(const std::string& stream_name,
                               const ParsedPacketData& data) {
     if (!m_async_writer) {
         std::cerr << "[RedisCache] pushToStream: async writer not initialized" << std::endl;
         return false;
     }
-    
+
     // JSON 직렬화
     json j = data.toJson();
     std::string json_str = j.dump();
-    
+
     // 비동기 쓰기 (즉시 리턴)
     bool success = m_async_writer->writeStream(stream_name, json_str);
-    
+
     // 통계 카운터도 비동기로 증가
     if (success) {
         m_async_writer->incrCounter(RedisKeys::statsCounter(data.protocol));
+    } else {
+        std::cerr << "[Redis] ✗ Failed to queue stream write: " << stream_name << std::endl;
     }
-    
+
     return success;
 }
 
@@ -248,8 +250,8 @@ long long RedisCache::getCounter(const std::string& key) {
 // === 5. Stream 초기화 ===
 void RedisCache::createProtocolStreams() {
     std::vector<std::string> protocols = {
-        "modbus_tcp", "s7comm", "xgt-fen", "dnp3", 
-        "dns", "dhcp", "ethernet_ip", "iec104", 
+        "modbus", "s7comm", "xgt_fen", "dnp3",
+        "dns", "dhcp", "ethernet_ip", "iec104",
         "mms", "opc_ua", "bacnet", "arp", "tcp_session"
     };
     

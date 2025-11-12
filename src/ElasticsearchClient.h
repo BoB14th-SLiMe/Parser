@@ -13,13 +13,13 @@
 using json = nlohmann::json;
 
 struct ElasticsearchConfig {
-    std::string host = "localhost";
+    std::string host = "192.168.4.140";
     int port = 9200;
     std::string username = "";
     std::string password = "";
     std::string index_prefix = "ics-packets";
-    int bulk_size = 50;  // 실시간 전송을 위해 50개로 감소
-    int flush_interval_ms = 1000;  // 1초마다 강제 flush
+    int bulk_size = 100;  // 50 → 100으로 증가
+    int flush_interval_ms = 1000;
     bool use_https = false;
 };
 
@@ -32,24 +32,18 @@ public:
     void disconnect();
     bool isConnected() const { return m_connected; }
     
-    // 단일 문서 전송
     bool indexDocument(const std::string& index, const json& document);
-    
-    // 벌크 전송 (성능 최적화)
     bool addToBulk(const std::string& protocol, const json& document);
     bool flushBulk();
     
-    // 인덱스 관리
     bool createIndex(const std::string& index);
     bool deleteIndex(const std::string& index);
     
-    // 시간 기반 인덱스 생성 (YYYY.MM.DD 형식)
     std::string getTimeBasedIndex(const std::string& protocol);
 
 private:
     ElasticsearchConfig m_config;
-    CURL* m_curl;
-    bool m_connected;
+    std::atomic<bool> m_connected;
     
     // 벌크 버퍼
     std::vector<std::string> m_bulk_buffer;
@@ -57,11 +51,19 @@ private:
     std::thread m_flush_thread;
     std::atomic<bool> m_stop_flush;
     
+    // ★ CURL 멀티스레딩 보호
+    std::mutex m_curl_mutex;
+    
     // 내부 함수
     void autoFlushLoop();
     std::string buildUrl(const std::string& path);
     bool sendRequest(const std::string& url, const std::string& method, 
                      const std::string& data, std::string& response);
+    bool flushBulkInternal(const std::vector<std::string>& buffer);
+    
+    // ★ CURL 핸들을 함수 내부에서 생성/해제
+    CURL* createCurlHandle();
+    void destroyCurlHandle(CURL* curl);
     
     static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp);
 };

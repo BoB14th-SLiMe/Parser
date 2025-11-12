@@ -166,7 +166,7 @@ int main(int argc, char* argv[]) {
     // Elasticsearch 설정
     // ========================================================================
     ElasticsearchConfig es_config;
-    es_config.host = getEnv("ELASTICSEARCH_HOST", "localhost");
+    es_config.host = getEnv("ELASTICSEARCH_HOST", "192.168.4.140");
     es_config.port = getEnvInt("ELASTICSEARCH_PORT", 9200);
     es_config.username = getEnv("ELASTICSEARCH_USERNAME", "");
     es_config.password = getEnv("ELASTICSEARCH_PASSWORD", "");
@@ -208,20 +208,35 @@ int main(int argc, char* argv[]) {
     std::cout << "  Worker Threads: " << (num_threads == 0 ? "Auto" : std::to_string(num_threads)) << std::endl;
     std::cout << std::endl;
 
-    std::cout << "[Config] Elasticsearch:" << std::endl;
-    std::cout << "  Host: " << es_config.host << ":" << es_config.port << std::endl;
-    std::cout << "  Index Prefix: " << es_config.index_prefix << std::endl;
-    std::cout << "  HTTPS: " << (es_config.use_https ? "Yes" : "No") << std::endl;
-    std::cout << "  Bulk Size: " << es_config.bulk_size << std::endl;
-    std::cout << "  Flush Interval: " << es_config.flush_interval_ms << " ms" << std::endl;
-    std::cout << std::endl;
+    // 파일 출력 모드일 때는 Elasticsearch/Redis 비활성화
+    RedisCacheConfig* redis_config_ptr = nullptr;
+    ElasticsearchConfig* es_config_ptr = nullptr;
 
-    std::cout << "[Config] Redis:" << std::endl;
-    std::cout << "  Host: " << redis_config.host << ":" << redis_config.port << std::endl;
-    std::cout << "  Database: " << redis_config.db << std::endl;
-    std::cout << "  Pool Size: " << redis_config.pool_size << std::endl;
-    std::cout << "  Async Writers: " << redis_config.async_writers << std::endl;
-    std::cout << std::endl;
+    if (realtime) {
+        // Realtime 모드: Elasticsearch와 Redis 사용
+        std::cout << "[Config] Elasticsearch:" << std::endl;
+        std::cout << "  Host: " << es_config.host << ":" << es_config.port << std::endl;
+        std::cout << "  Index Prefix: " << es_config.index_prefix << std::endl;
+        std::cout << "  HTTPS: " << (es_config.use_https ? "Yes" : "No") << std::endl;
+        std::cout << "  Bulk Size: " << es_config.bulk_size << std::endl;
+        std::cout << "  Flush Interval: " << es_config.flush_interval_ms << " ms" << std::endl;
+        std::cout << std::endl;
+
+        std::cout << "[Config] Redis:" << std::endl;
+        std::cout << "  Host: " << redis_config.host << ":" << redis_config.port << std::endl;
+        std::cout << "  Database: " << redis_config.db << std::endl;
+        std::cout << "  Pool Size: " << redis_config.pool_size << std::endl;
+        std::cout << "  Async Writers: " << redis_config.async_writers << std::endl;
+        std::cout << std::endl;
+
+        redis_config_ptr = &redis_config;
+        es_config_ptr = &es_config;
+    } else {
+        // 파일 출력 모드: Elasticsearch와 Redis 비활성화
+        std::cout << "[Config] Elasticsearch: Disabled (file output mode)" << std::endl;
+        std::cout << "[Config] Redis: Disabled (file output mode)" << std::endl;
+        std::cout << std::endl;
+    }
 
     // ========================================================================
     // PacketParser 초기화
@@ -231,8 +246,8 @@ int main(int argc, char* argv[]) {
         output_dir,
         rolling_interval,
         num_threads,
-        &redis_config,
-        &es_config,
+        redis_config_ptr,
+        es_config_ptr,
         realtime  // disable_file_output
     );
 

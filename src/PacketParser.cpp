@@ -145,12 +145,17 @@ void PacketParser::createParsersForWorker(int worker_id) {
     parsers.push_back(std::make_unique<GenericParser>("bacnet"));
     parsers.push_back(std::make_unique<UnknownParser>());
 
+    // AssetManager 설정 (모든 파서에)
+    for (const auto& parser : parsers) {
+        parser->setAssetManager(&m_assetManager);
+    }
+
     // 파일 출력이 활성화된 경우만 UnifiedWriter 설정
     if (!m_disable_file_output && m_unified_writer) {
         for (const auto& parser : parsers) {
             parser->setUnifiedWriter(m_unified_writer.get());
         }
-        
+
         // 첫 번째 워커만 백엔드 콜백 설정
         if (worker_id == 0) {
             m_unified_writer->setBackendCallback(
@@ -190,7 +195,7 @@ PacketParser::~PacketParser() {
 
 void PacketParser::sendToBackends(const UnifiedRecord& record) {
     try {
-        // Elasticsearch로 즉시 전송 (bulk에 추가)
+        // Elasticsearch로 즉시 전송 (기존과 동일)
         if (m_use_elasticsearch && m_elasticsearch->isConnected()) {
             json es_doc;
             es_doc["@timestamp"] = record.timestamp;
@@ -198,7 +203,7 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             es_doc["src_ip"] = record.sip;
             es_doc["dst_ip"] = record.dip;
             
-            // 포트 파싱 (빈 문자열 처리)
+            // 포트 파싱
             try {
                 es_doc["src_port"] = record.sp.empty() ? 0 : std::stoi(record.sp);
                 es_doc["dst_port"] = record.dp.empty() ? 0 : std::stoi(record.dp);
@@ -212,28 +217,32 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             es_doc["dst_mac"] = record.dmac;
             es_doc["direction"] = record.dir;
             
-            // protocol_details 파싱
-            try {
-                es_doc["protocol_details"] = json::parse(record.details_json);
-            } catch (const std::exception& e) {
-                std::cerr << "[WARN] JSON parsing error: " << e.what() << std::endl;
+            // protocol_details 파싱 (details_json이 있는 경우만)
+            if (!record.details_json.empty()) {
+                try {
+                    es_doc["protocol_details"] = json::parse(record.details_json);
+                } catch (const std::exception& e) {
+                    std::cerr << "[WARN] JSON parsing error: " << e.what() << std::endl;
+                    es_doc["protocol_details"] = json::object();
+                }
+            } else {
                 es_doc["protocol_details"] = json::object();
             }
             
-            // 프로토콜별 중요 필드 추출 (대시보드 필터링용)
-            if (record.protocol == "modbus_tcp") {
+            // 프로토콜별 중요 필드 추출 (기존과 동일)
+            if (record.protocol == "modbus") {
                 if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
                 if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
                 if (!record.modbus_description.empty()) es_doc["description"] = record.modbus_description;
             } else if (record.protocol == "s7comm") {
                 if (!record.s7_fn.empty()) es_doc["s7_function"] = record.s7_fn;
                 if (!record.s7_description.empty()) es_doc["description"] = record.s7_description;
-            } else if (record.protocol == "xgt-fen") {
+            } else if (record.protocol == "xgt_fen") {
                 if (!record.xgt_cmd.empty()) es_doc["xgt_command"] = record.xgt_cmd;
                 if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
             }
             
-            // 자산 정보 추가
+            // 자산 정보 추가 (기존과 동일)
             if (m_use_redis && m_redis_cache->isConnected()) {
                 AssetInfo src_asset = m_redis_cache->getAssetInfo(record.sip);
                 AssetInfo dst_asset = m_redis_cache->getAssetInfo(record.dip);
@@ -246,43 +255,67 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
                 }
             }
             
-            // Bulk에 추가 (100개 이상이면 자동 flush됨)
-            if (!m_elasticsearch->addToBulk(record.protocol, es_doc)) {
+            if (m_elasticsearch->addToBulk(record.protocol, es_doc)) {
+                // 1000개마다 한번씩 로그 출력
+                static std::atomic<int> es_add_count{0};
+                int count = ++es_add_count;
+                if (count % 1000 == 0) {
+                    std::cout << "[Elasticsearch] ✓ Queued " << count << " documents to bulk" << std::endl;
+                }
+            } else {
                 std::cerr << "[WARN] Failed to add to Elasticsearch bulk" << std::endl;
             }
         }
         
-        // Redis Stream으로 전송 (ML/DL 파이프라인용)
+        // ★ Redis Stream으로 전송 - 프로토콜명을 키로 사용
         if (m_use_redis && m_redis_cache->isConnected()) {
             ParsedPacketData redis_data;
             redis_data.timestamp = record.timestamp;
             redis_data.protocol = record.protocol;
-            redis_data.src_ip = record.sip;
-            redis_data.dst_ip = record.dip;
-            
-            try {
-                redis_data.src_port = record.sp.empty() ? 0 : std::stoi(record.sp);
-                redis_data.dst_port = record.dp.empty() ? 0 : std::stoi(record.dp);
-            } catch (const std::exception& e) {
-                std::cerr << "[WARN] Port parsing error for Redis: " << e.what() << std::endl;
-                redis_data.src_port = 0;
-                redis_data.dst_port = 0;
-            }
-            
-            redis_data.src_mac = record.smac;
-            redis_data.dst_mac = record.dmac;
-            
-            try {
-                redis_data.protocol_details = json::parse(record.details_json);
-            } catch (const std::exception& e) {
+
+            // JSONL 형식과 동일한 짧은 필드명 사용
+            redis_data.smac = record.smac;
+            redis_data.dmac = record.dmac;
+            redis_data.sip = record.sip;
+            redis_data.sp = record.sp;
+            redis_data.dip = record.dip;
+            redis_data.dp = record.dp;
+            redis_data.sq = record.sq;
+            redis_data.ak = record.ak;
+            redis_data.fl = record.fl;
+            redis_data.dir = record.dir;
+
+            // 자산 정보 추가
+            redis_data.src_asset_id = record.src_asset_id;
+            redis_data.src_asset_name = record.src_asset_name;
+            redis_data.src_asset_group = record.src_asset_group;
+            redis_data.src_asset_location = record.src_asset_location;
+            redis_data.dst_asset_id = record.dst_asset_id;
+            redis_data.dst_asset_name = record.dst_asset_name;
+            redis_data.dst_asset_group = record.dst_asset_group;
+            redis_data.dst_asset_location = record.dst_asset_location;
+
+            // protocol_details 파싱 (details_json이 있는 경우만)
+            if (!record.details_json.empty()) {
+                try {
+                    redis_data.protocol_details = json::parse(record.details_json);
+                } catch (const std::exception& e) {
+                    redis_data.protocol_details = json::object();
+                }
+            } else {
                 redis_data.protocol_details = json::object();
             }
-            
-            redis_data.features = json::object();
-            
+
             std::string stream_name = RedisKeys::protocolStream(record.protocol);
-            if (!m_redis_cache->pushToStream(stream_name, redis_data)) {
-                std::cerr << "[WARN] Failed to push to Redis stream" << std::endl;
+            if (m_redis_cache->pushToStream(stream_name, redis_data)) {
+                // 1000개마다 한번씩 로그 출력
+                static std::atomic<int> redis_success_count{0};
+                int count = ++redis_success_count;
+                if (count % 1000 == 0) {
+                    std::cout << "[Redis] ✓ Sent " << count << " records to streams" << std::endl;
+                }
+            } else {
+                std::cerr << "[WARN] Failed to push to Redis stream: " << stream_name << std::endl;
             }
         }
     } catch (const std::exception& e) {
@@ -480,8 +513,13 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
         inet_ntop(AF_INET, &(ip_header->ip_src), src_ip_str, INET_ADDRSTRLEN);
         inet_ntop(AF_INET, &(ip_header->ip_dst), dst_ip_str, INET_ADDRSTRLEN);
 
-        const u_char* l4_payload = l3_payload + (ip_header->hl * 4);
-        int l4_payload_size = l3_payload_size - (ip_header->hl * 4);
+        // Use IP Total Length to calculate actual payload size (not captured buffer size)
+        // This prevents garbage data in ACK packets from being counted as payload
+        uint16_t ip_total_len = ntohs(ip_header->len);
+        int ip_header_len = ip_header->hl * 4;
+
+        const u_char* l4_payload = l3_payload + ip_header_len;
+        int l4_payload_size = ip_total_len - ip_header_len;
 
         // TCP 패킷 처리
         if (ip_header->p == IPPROTO_TCP) {

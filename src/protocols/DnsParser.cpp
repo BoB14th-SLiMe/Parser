@@ -30,8 +30,12 @@ void DnsParser::parse(const PacketInfo& info) {
     uint16_t ancount = ntohs(*(uint16_t*)(info.payload + 6));
     
     std::string direction = (flags & 0x8000) ? "response" : "request";
-    
+
     UnifiedRecord record = createUnifiedRecord(info, direction);
+
+    // Set payload length (common field for all protocols)
+    record.len = std::to_string(info.payload_size);
+
     record.dns_tid = std::to_string(tid);
     record.dns_fl = std::to_string(flags);
     record.dns_qc = std::to_string(qdcount);

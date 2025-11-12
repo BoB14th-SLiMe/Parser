@@ -30,6 +30,10 @@ void Dnp3Parser::parse(const PacketInfo& info) {
     }
     
     UnifiedRecord record = createUnifiedRecord(info, direction);
+
+    // Set payload length (common field for all protocols)
+    record.len = std::to_string(info.payload_size);
+
     record.dnp3_len = std::to_string(len);
     record.dnp3_ctrl = std::to_string(ctrl);
     record.dnp3_dest = std::to_string(dest);

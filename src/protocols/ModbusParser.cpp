@@ -14,8 +14,12 @@
 #include <arpa/inet.h>
 #endif
 
+// Static member initialization
+std::map<std::string, std::list<ModbusRequestInfo>> ModbusParser::s_pending_requests;
+std::mutex ModbusParser::s_requests_mutex;
+
 ModbusParser::ModbusParser(AssetManager& assetManager)
-    : m_assetManager(assetManager), 
+    : m_assetManager(assetManager),
       m_last_cleanup(std::chrono::steady_clock::now()) {}
 
 ModbusParser::~ModbusParser() {}
@@ -26,16 +30,49 @@ static uint16_t safe_ntohs(const u_char* ptr) {
     return ntohs(val_n);
 }
 
-std::string ModbusParser::getName() const { 
-    return "modbus_tcp"; 
+std::string ModbusParser::getName() const {
+    return "modbus";
 }
 
 bool ModbusParser::isProtocol(const PacketInfo& info) const {
-    return info.protocol == 6 &&  // IPPROTO_TCP = 6
-           (info.dst_port == 502 || info.src_port == 502) &&
-           info.payload_size >= 7 &&
-           info.payload[2] == 0x00 &&
-           info.payload[3] == 0x00;
+    // Check if it's TCP and uses Modbus port
+    if (info.protocol != 6 || (info.dst_port != 502 && info.src_port != 502)) {
+        return false;
+    }
+
+    // CRITICAL: Check TCP payload size first
+    // ACK packets or empty packets should be rejected immediately
+    // Minimum valid Modbus TCP frame: 7 bytes MBAP header + 1 byte function code = 8 bytes
+    if (info.payload_size < 8) {
+        return false;  // Not enough data for a valid Modbus frame
+    }
+
+    // Verify MBAP header: Protocol ID should be 0x0000 (Modbus)
+    // Check bytes [2] and [3] for protocol identifier
+    if (info.payload[2] != 0x00 || info.payload[3] != 0x00) {
+        return false;
+    }
+
+    // Check MBAP Length field (bytes 4-5)
+    // Length = number of following bytes after the first 6 bytes (Unit ID + PDU)
+    uint16_t mbap_length = safe_ntohs(info.payload + 4);
+
+    // Length must be at least 2 (1 byte Unit ID + at least 1 byte PDU/Function Code)
+    if (mbap_length < 2) {
+        return false;  // Invalid Modbus frame
+    }
+
+    // CRITICAL: Verify payload size matches MBAP frame size EXACTLY
+    // MBAP header (6 bytes) + MBAP length field value = total frame size
+    // This rejects ACK packets with garbage data from previous transmissions
+    int expected_frame_size = 6 + mbap_length;
+    if (info.payload_size != expected_frame_size) {
+        // Payload size mismatch - this is likely an ACK packet with residual data
+        // or a fragmented/corrupted packet
+        return false;
+    }
+
+    return true;
 }
 
 void ModbusParser::parse(const PacketInfo& info) {
@@ -74,31 +111,57 @@ void ModbusParser::parse(const PacketInfo& info) {
     flow_key = client_ip + ":" + std::to_string(client_port) + "->" + 
                server_ip + ":" + std::to_string(server_port);
 
-    uint32_t req_key = (static_cast<uint32_t>(trans_id) << 8) | current_fc;
-    ModbusRequestInfo* req_info_ptr = nullptr;
-    
-    if (is_response) {
-        if (m_pending_requests[flow_key].count(req_key)) {
-            req_info_ptr = &m_pending_requests[flow_key][req_key];
-        }
-    } else {
-        ModbusRequestInfo new_req;
-        new_req.function_code = current_fc;
-        new_req.timestamp = std::chrono::steady_clock::now();  // ← 타임스탬프 기록
-        
-        if (pdu_len >= 3) {
-            if ((new_req.function_code >= 1 && new_req.function_code <= 6) ||
-                (new_req.function_code == 15 || new_req.function_code == 16)) {
-                new_req.start_address = safe_ntohs(pdu + 1);
+    // Wireshark-style matching: search through list for matching request
+    ModbusRequestInfo req_info;
+    bool req_found = false;
+
+    {
+        std::lock_guard<std::mutex> lock(s_requests_mutex);
+
+        if (is_request) {
+            // Request: create and prepend to list (like Wireshark's wmem_list_prepend)
+            ModbusRequestInfo new_req;
+            new_req.trans_id = trans_id;
+            new_req.function_code = current_fc;
+            new_req.timestamp = std::chrono::steady_clock::now();
+
+            // Extract base_address and num_reg from request PDU (FC 1-6, 15-16)
+            if (pdu_len >= 3) {
+                if ((current_fc >= 1 && current_fc <= 6) ||
+                    (current_fc == 15 || current_fc == 16)) {
+                    new_req.base_address = safe_ntohs(pdu + 1);
+                    if (pdu_len >= 5) {
+                        new_req.num_reg = safe_ntohs(pdu + 3);
+                    }
+                }
+            }
+
+            // Prepend to list (most recent first)
+            s_pending_requests[flow_key].push_front(new_req);
+        } else {
+            // Response: search backward through request list (like Wireshark)
+            // Looking for matching trans_id and function_code
+            auto& req_list = s_pending_requests[flow_key];
+
+            for (auto it = req_list.begin(); it != req_list.end(); ++it) {
+                if (it->trans_id == trans_id && it->function_code == current_fc) {
+                    req_info = *it;  // Copy data
+                    req_found = true;
+                    // Remove the matched request to prevent reuse
+                    req_list.erase(it);
+                    break;
+                }
             }
         }
-        
-        m_pending_requests[flow_key][req_key] = new_req;
-    }
+    }  // mutex released here
     
     // UnifiedRecord 생성
     UnifiedRecord record = createUnifiedRecord(info, direction);
-    
+
+    // Set Modbus datagram length (PDU length, not total TCP payload)
+    // This matches what Wireshark shows as "Len" in Modbus protocol
+    record.len = std::to_string(pdu_len);
+
     // Modbus 필드 채우기
     record.modbus_tid = std::to_string(trans_id);
     record.modbus_fc = std::to_string(current_fc);
@@ -116,34 +179,27 @@ void ModbusParser::parse(const PacketInfo& info) {
                     if (pdu_len >= 2) {
                         uint8_t byte_count = pdu[1];
                         record.modbus_bc = std::to_string(byte_count);
-                        
+
                         if (byte_count > 0 && pdu_len >= (2 + byte_count)) {
                             const u_char* reg_data = pdu + 2;
                             int num_registers = byte_count / 2;
-                            uint16_t start_addr = req_info_ptr ? req_info_ptr->start_address : 0;
-                            
+                            // Use base_address from matched request (like Wireshark's pkt_info->reg_base)
+                            uint16_t reg_base = req_found ? req_info.base_address : 0;
+
                             // 각 레지스터를 개별 레코드로 생성
                             for (int i = 0; i < num_registers; ++i) {
                                 UnifiedRecord reg_record = record;
                                 uint16_t reg_value = safe_ntohs(reg_data + (i * 2));
-                                uint16_t reg_addr = start_addr + i;
-                                
+                                uint16_t reg_addr = reg_base + i;
+
                                 reg_record.modbus_regs_addr = std::to_string(reg_addr);
                                 reg_record.modbus_regs_val = std::to_string(reg_value);
-                                
+
                                 std::string translated_addr = m_assetManager.translateModbusAddress(
                                     record.modbus_fc, reg_addr);
                                 reg_record.modbus_translated_addr = translated_addr;
                                 reg_record.modbus_description = m_assetManager.getDescription(translated_addr);
-                                
-                                // JSON details
-                                std::stringstream details_ss;
-                                details_ss << R"({"tid":)" << trans_id 
-                                          << R"(,"pdu":{"fc":)" << (int)current_fc
-                                          << R"(,"bc":)" << (int)byte_count
-                                          << R"(,"regs":{")" << reg_addr << R"(":)" << reg_value << R"(}}})";
-                                reg_record.details_json = details_ss.str();
-                                
+
                                 addUnifiedRecord(reg_record);
                             }
                             return; // 이미 모든 레코드 추가됨
@@ -191,27 +247,6 @@ void ModbusParser::parse(const PacketInfo& info) {
         record.modbus_translated_addr = translated_addr;
         record.modbus_description = m_assetManager.getDescription(translated_addr);
     }
-    
-    // JSON details 생성
-    std::stringstream details_ss;
-    details_ss << R"({"tid":)" << trans_id << R"(,"pdu":{"fc":)" << (int)current_fc;
-    if (!record.modbus_err.empty()) {
-        details_ss << R"(,"err":)" << record.modbus_err;
-    }
-    if (!record.modbus_bc.empty()) {
-        details_ss << R"(,"bc":)" << record.modbus_bc;
-    }
-    if (!record.modbus_addr.empty()) {
-        details_ss << R"(,"addr":)" << record.modbus_addr;
-    }
-    if (!record.modbus_qty.empty()) {
-        details_ss << R"(,"qty":)" << record.modbus_qty;
-    }
-    if (!record.modbus_val.empty()) {
-        details_ss << R"(,"val":)" << record.modbus_val;
-    }
-    details_ss << "}}";
-    record.details_json = details_ss.str();
-    
+
     addUnifiedRecord(record);
 }

@@ -56,7 +56,7 @@ XgtFenParser::XgtFenParser(AssetManager& assetManager)
 XgtFenParser::~XgtFenParser() {}
 
 std::string XgtFenParser::getName() const {
-    return "xgt-fen";
+    return "xgt_fen";
 }
 
 bool XgtFenParser::isProtocol(const PacketInfo& info) const {
@@ -328,7 +328,11 @@ void XgtFenParser::parse(const PacketInfo& info) {
 
     // UnifiedRecord 생성
     UnifiedRecord record = createUnifiedRecord(info, direction);
-    
+
+    // Set XGT-FEN datagram length (instruction data length from header)
+    // This is the application layer data length, not including the 20-byte XGT header
+    record.len = std::to_string(header.length);
+
     // XGT 공통 필드
     record.xgt_prid = std::to_string(header.invokeId);
     record.xgt_companyId = header.companyId;
@@ -337,16 +341,6 @@ void XgtFenParser::parse(const PacketInfo& info) {
     record.xgt_source = std::to_string(header.sourceOfFrame);
     record.xgt_len = std::to_string(header.length);
     record.xgt_fenetpos = std::to_string(header.fenetPosition);
-
-    // JSON details 시작
-    std::stringstream details_ss;
-    details_ss << R"({"hdr":{"companyId":")" << header.companyId << R"(",)"
-               << R"("plcInfo":)" << header.plcInfo
-               << R"(,"cpuInfo":)" << (int)header.cpuInfo
-               << R"(,"source":)" << (int)header.sourceOfFrame
-               << R"(,"invokeId":)" << header.invokeId
-               << R"(,"len":)" << header.length
-               << R"(,"fenetPos":)" << (int)header.fenetPosition << "}";
 
     if (parse_success) {
         record.xgt_cmd = std::to_string(instruction.command);
@@ -402,69 +396,7 @@ void XgtFenParser::parse(const PacketInfo& info) {
             record.xgt_translated_addr = translatedAddr;
             record.xgt_description = m_assetManager.getDescription(translatedAddr);
         }
-
-        // JSON details
-        details_ss << R"(,"inst":{"cmd":)" << instruction.command
-                  << R"(,"dtype":)" << instruction.dataType
-                  << R"(,"isCont":)" << (instruction.is_continuous ? "true" : "false")
-                  << R"(,"blkCnt":)" << instruction.blockCount;
-
-        if (!instruction.variables.empty()) {
-            details_ss << R"(,"vars":[)";
-            for(size_t i = 0; i < instruction.variables.size(); ++i) {
-                if (i > 0) details_ss << ",";
-                details_ss << R"(")" << instruction.variables[i].second << R"(")";
-            }
-            details_ss << "]";
-        }
-        if (!instruction.variableName.empty()) {
-            details_ss << R"(,"varNm":")" << instruction.variableName << R"(")";
-        }
-        if (instruction.dataSize > 0) {
-            details_ss << R"(,"dataSize":)" << instruction.dataSize;
-        }
-
-        if (header.sourceOfFrame == 0x11) {
-            details_ss << R"(,"errStat":)" << instruction.errorStatus;
-            if (instruction.errorStatus != 0) {
-                details_ss << R"(,"errInfo":)" << instruction.errorInfoOrBlockCount;
-            } else if (!instruction.is_continuous) {
-                details_ss << R"(,"respBlkCnt":)" << instruction.errorInfoOrBlockCount;
-            }
-        }
-
-        if (!instruction.readData.empty()) {
-            details_ss << R"(,"readData":[)";
-            for (size_t i = 0; i < instruction.readData.size(); ++i) {
-                if (i > 0) details_ss << ",";
-                details_ss << R"(")" << bytesToHexString(instruction.readData[i].second.data(), 
-                                                         instruction.readData[i].second.size()) << R"(")";
-            }
-            details_ss << "]";
-        }
-        if (!instruction.continuousReadData.empty()) {
-            std::string data_key = (header.sourceOfFrame == 0x11) ? "contRespData" : "contWriteData";
-            details_ss << R"(,")" << data_key << R"(":")" 
-                      << bytesToHexString(instruction.continuousReadData.data(), 
-                                         instruction.continuousReadData.size()) << R"(")";
-        }
-        if (!instruction.writeData.empty()) {
-            details_ss << R"(,"writeData":[)";
-            for (size_t i = 0; i < instruction.writeData.size(); ++i) {
-                if (i > 0) details_ss << ",";
-                details_ss << R"(")" << bytesToHexString(instruction.writeData[i].second.data(), 
-                                                         instruction.writeData[i].second.size()) << R"(")";
-            }
-            details_ss << "]";
-        }
-        details_ss << "}";
-    } else {
-        details_ss << R"(,"parse_error":"Instruction parsing failed","raw_instruction_hex":")"
-                  << bytesToHexString(instruction_payload, instruction_size) << R"(")";
     }
 
-    details_ss << "}";
-    record.details_json = details_ss.str();
-    
     addUnifiedRecord(record);
 }

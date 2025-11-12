@@ -55,39 +55,65 @@ struct AssetInfo {
     }
 };
 
-// 파싱된 패킷 데이터
+// 파싱된 패킷 데이터 (JSONL 출력 형식과 동일)
 struct ParsedPacketData {
     std::string timestamp;
     std::string protocol;
-    
-    std::string src_ip;
-    std::string dst_ip;
-    uint16_t src_port;
-    uint16_t dst_port;
-    std::string src_mac;
-    std::string dst_mac;
-    
-    AssetInfo src_asset;
-    AssetInfo dst_asset;
-    
-    json protocol_details;
-    json features;
-    
+
+    // JSONL 형식과 동일한 짧은 필드명 사용
+    std::string smac;  // src_mac
+    std::string dmac;  // dst_mac
+    std::string sip;   // src_ip
+    std::string sp;    // src_port
+    std::string dip;   // dst_ip
+    std::string dp;    // dst_port
+    std::string sq;    // TCP sequence number
+    std::string ak;    // TCP acknowledgement
+    std::string fl;    // TCP flags
+    std::string dir;   // direction
+
+    // 자산 정보
+    std::string src_asset_id;
+    std::string src_asset_name;
+    std::string src_asset_group;
+    std::string src_asset_location;
+    std::string dst_asset_id;
+    std::string dst_asset_name;
+    std::string dst_asset_group;
+    std::string dst_asset_location;
+
+    json protocol_details;  // JSONL에서는 "d"로 저장
+
     json toJson() const {
-        return {
-            {"timestamp", timestamp},
+        json j = {
+            {"@timestamp", timestamp},
             {"protocol", protocol},
-            {"src_ip", src_ip},
-            {"dst_ip", dst_ip},
-            {"src_port", src_port},
-            {"dst_port", dst_port},
-            {"src_mac", src_mac},
-            {"dst_mac", dst_mac},
-            {"src_asset", src_asset.toJson()},
-            {"dst_asset", dst_asset.toJson()},
-            {"protocol_details", protocol_details},
-            {"features", features}
+            {"smac", smac},
+            {"dmac", dmac},
+            {"sip", sip},
+            {"dip", dip},
+            {"sp", sp},
+            {"dp", dp},
+            {"sq", sq},
+            {"ak", ak},
+            {"fl", fl},
+            {"dir", dir}
         };
+
+        // 자산 정보 추가 (문자열로만, IP 정보 제외)
+        if (!src_asset_name.empty()) {
+            j["src_asset"] = src_asset_name;
+        }
+        if (!dst_asset_name.empty()) {
+            j["dst_asset"] = dst_asset_name;
+        }
+
+        // protocol_details를 "d"로 저장
+        if (!protocol_details.empty()) {
+            j["d"] = protocol_details;
+        }
+
+        return j;
     }
 };
 

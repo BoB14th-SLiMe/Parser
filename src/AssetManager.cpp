@@ -276,10 +276,12 @@ std::string AssetManager::translateModbusAddress(const std::string& fc_str, unsi
                 offset = 10001;
                 break;
             case 3:
-                offset = 300001;
+                // FC 3: Read Holding Registers (4xxxxx references - 6 digits)
+                offset = 400001;
                 break;
             case 4:
-                offset = 400001;
+                // FC 4: Read Input Registers (3xxxxx references - 6 digits)
+                offset = 300001;
                 break;
             default:
                 return std::to_string(addr);

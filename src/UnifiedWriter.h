@@ -24,7 +24,17 @@ struct UnifiedRecord {
     std::string ak;
     std::string fl;
     std::string dir;
-    
+
+    // 자산 정보
+    std::string src_asset_id;
+    std::string src_asset_name;
+    std::string src_asset_group;
+    std::string src_asset_location;
+    std::string dst_asset_id;
+    std::string dst_asset_name;
+    std::string dst_asset_group;
+    std::string dst_asset_location;
+
     // 프로토콜별 상세 정보 (JSON 형태)
     std::string details_json;
     

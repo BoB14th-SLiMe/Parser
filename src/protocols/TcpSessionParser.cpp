@@ -17,7 +17,10 @@ bool TcpSessionParser::isProtocol(const PacketInfo& info) const {
 
 void TcpSessionParser::parse(const PacketInfo& info) {
     UnifiedRecord record = createUnifiedRecord(info, "unknown");
-    
+
+    // Set payload length (common field for all protocols)
+    record.len = std::to_string(info.payload_size);
+
     std::stringstream details_ss;
     details_ss << R"({"seq":)" << info.tcp_seq << R"(,"ack":)" << info.tcp_ack
                << R"(,"flags":{"syn":)" << ((info.tcp_flags & TH_SYN) ? 1 : 0)
@@ -25,6 +28,6 @@ void TcpSessionParser::parse(const PacketInfo& info) {
                << R"(,"fin":)" << ((info.tcp_flags & TH_FIN) ? 1 : 0)
                << R"(,"rst":)" << ((info.tcp_flags & TH_RST) ? 1 : 0) << "}}";
     record.details_json = details_ss.str();
-    
+
     addUnifiedRecord(record);
 }
