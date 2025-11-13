@@ -217,7 +217,7 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
                 << escapeCSV(record.xgt_translated_addr) << ","
                 << escapeCSV(record.xgt_description) << "\n";
         
-        // JSONL 작성 - CSV와 동일한 구조로 생성
+        // ===== JSONL 작성 - 수정된 부분 =====
         std::stringstream json_ss;
         json_ss << R"({"@timestamp":")" << record.timestamp << R"(",)"
                 << R"("protocol":")" << record.protocol << R"(",)"
@@ -233,6 +233,11 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
         if (!record.fl.empty()) json_ss << R"("fl":)" << record.fl << R"(,)";
         if (!record.dir.empty()) json_ss << R"("dir":")" << record.dir << R"(",)";
 
+        // ===== len 필드 추가 (모든 프로토콜에 공통) =====
+        if (!record.len.empty()) {
+            json_ss << R"("len":)" << record.len << R"(,)";
+        }
+
         // 자산 정보
         if (!record.src_asset_name.empty()) {
             json_ss << R"("src_asset":")" << record.src_asset_name << R"(",)";
@@ -241,7 +246,7 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
             json_ss << R"("dst_asset":")" << record.dst_asset_name << R"(",)";
         }
 
-        // 프로토콜별 상세 정보 - CSV와 동일한 구조
+        // 프로토콜별 상세 정보
         if (record.protocol == "arp") {
             if (!record.arp_op.empty()) json_ss << R"("arp.op":")" << record.arp_op << R"(",)";
             if (!record.arp_tmac.empty()) json_ss << R"("arp.tmac":")" << record.arp_tmac << R"(",)";
@@ -300,9 +305,9 @@ void UnifiedWriter::writeTimeSlot(const std::string& time_slot) {
             if (!record.xgt_data.empty()) json_ss << R"("xgt_fen.data":")" << record.xgt_data << R"(",)";
             if (!record.xgt_translated_addr.empty()) json_ss << R"("xgt_fen.translated_addr":")" << record.xgt_translated_addr << R"(",)";
             if (!record.xgt_description.empty()) json_ss << R"("xgt_fen.description":")" << record.xgt_description << R"(",)";
-        } else if (!record.len.empty()) {
-            json_ss << R"("len":)" << record.len << ",";
         }
+        // ===== 프로토콜별 조건문 삭제: else if (!record.len.empty()) { ... } =====
+        // len 필드는 이미 위에서 공통적으로 처리됨
 
         // 마지막 콤마 제거 후 파일에 쓰기
         std::string json_line = json_ss.str();

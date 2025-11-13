@@ -56,14 +56,8 @@ WORKDIR /app
 COPY --from=builder /build/build/parser /usr/local/bin/parser
 RUN chmod +x /usr/local/bin/parser
 
-# Assets 디렉토리 복사 (있는 경우)
-COPY assets* /app/assets/ || true
-
-# Config 파일 복사 (있는 경우)
-COPY config.json* /app/ || true
-
 # 출력 디렉토리 생성
-RUN mkdir -p /data/output /app/logs
+RUN mkdir -p /data/output /app/logs /app/assets
 
 # 볼륨 설정
 VOLUME ["/data/output", "/app/assets", "/app/logs"]

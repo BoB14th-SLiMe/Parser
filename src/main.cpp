@@ -158,6 +158,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // rolling_interval이 설정되면 파일 출력 활성화
+    if (rolling_interval > 0) {
+        realtime = false;
+    }
+
     // Signal handler 등록
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);

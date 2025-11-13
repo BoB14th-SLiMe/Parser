@@ -6,10 +6,10 @@ echo "  Parser Container Starting..."
 echo "========================================"
 
 # 환경 변수 기본값 설정
-INTERFACE="${INTERFACE:-eth0}"
+INTERFACE="${NETWORK_INTERFACE:-${INTERFACE:-any}}"
 OUTPUT_DIR="${OUTPUT_DIR:-/data/output}"
-ROLLING_MIN="${ROLLING_MIN:-5}"
-THREADS="${THREADS:-4}"
+ROLLING_MIN="${ROLLING_INTERVAL:-${ROLLING_MIN:-5}}"
+THREADS="${PARSER_THREADS:-${THREADS:-4}}"
 PCAP_FILE="${PCAP_FILE:-}"
 ELASTICSEARCH_HOST="${ELASTICSEARCH_HOST:-localhost}"
 ELASTICSEARCH_PORT="${ELASTICSEARCH_PORT:-9200}"

@@ -28,6 +28,10 @@ public:
 private:
     AssetManager& m_assetManager;
     std::map<std::string, std::map<uint16_t, S7CommRequestInfo>> m_pending_requests;
+    std::chrono::steady_clock::time_point m_last_cleanup;
+
+    void cleanupOldRequests();
+    std::string generateFlowKey(const PacketInfo& info, bool is_request) const;
 };
 
 #endif // S7COMM_PARSER_H
