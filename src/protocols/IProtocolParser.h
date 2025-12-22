@@ -25,6 +25,8 @@ struct PacketInfo {
     uint8_t protocol = 0;
     uint32_t tcp_seq = 0;
     uint32_t tcp_ack = 0;
+    uint32_t tcp_relative_seq = 1;  // Relative sequence number (default 1 for wireshark compatibility)
+    uint32_t tcp_relative_ack = 1;  // Relative acknowledgment number (default 1 for wireshark compatibility)
     uint8_t tcp_flags = 0;
     const unsigned char* payload = nullptr;
     int payload_size = 0;

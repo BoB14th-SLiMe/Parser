@@ -145,20 +145,22 @@ void S7CommParser::parse(const PacketInfo& info) {
 
     UnifiedRecord record = createUnifiedRecord(info, direction);
 
-    // Set S7Comm datagram length (S7Comm PDU length, not total TCP payload)
-    // Total COTP header is 7 bytes, so s7_pdu_len is the S7Comm protocol data length
-    record.len = std::to_string(s7_pdu_len);
+    // Set len to TCP payload length (to match wireshark_parser which uses tcp.len)
+    record.len = std::to_string(info.payload_size);
 
-    record.s7_prid = std::to_string(pdu_ref);
-    record.s7_ros = std::to_string(rosctr);
+    // Python과 일치: s7comm.ros, s7comm.fn, s7comm.ic, s7comm.db, s7comm.addr, s7comm.len, s7comm.description
+    record.s7comm_ros = std::to_string(rosctr);
 
     if (param_len > 0 && (s7_pdu_len >= header_size + param_len)) {
         const u_char* param = s7_pdu + header_size;
-        record.s7_fn = std::to_string(param[0]);
+        // Format function code as hex (to match wireshark_parser)
+        std::stringstream ss_fn;
+        ss_fn << "0x" << std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(param[0]);
+        record.s7comm_fn = ss_fn.str();
 
         if ((param[0] == 0x04 || param[0] == 0x05) && param_len >= 2) {
             uint8_t item_count = param[1];
-            record.s7_ic = std::to_string(item_count);
+            record.s7comm_ic = std::to_string(item_count);
 
             const u_char* item_ptr = param + 2;
             for(int i = 0; i < item_count; ++i) {
@@ -172,18 +174,17 @@ void S7CommParser::parse(const PacketInfo& info) {
                 uint32_t addr = s7_addr_to_int(item_ptr + 9) >> 3;
 
                 if (i == 0) {
-                    record.s7_syn = std::to_string(item_ptr[2]);
-                    record.s7_tsz = std::to_string(item_ptr[3]);
-                    record.s7_amt = std::to_string(safe_ntohs(item_ptr + 4));
-                    record.s7_ar = std::to_string(area);
-                    record.s7_addr = std::to_string(addr);
+                    // Python과 일치: s7_syn, s7_tsz, s7_amt, s7_ar 필드 제거
+                    // 로직에서 area는 사용하지만 record에 저장하지 않음
+                    record.s7comm_addr = std::to_string(addr);
                     if (area == 0x84) {
-                        record.s7_db = std::to_string(db_num);
+                        record.s7comm_db = std::to_string(db_num);
                     }
 
+                    // Description은 db와 addr로 계산
                     std::string translated_addr = m_assetManager.translateS7Address(
-                        record.s7_ar, record.s7_db, record.s7_addr);
-                    record.s7_description = m_assetManager.getDescription(translated_addr);
+                        std::to_string(area), record.s7comm_db, record.s7comm_addr);
+                    record.s7comm_description = m_assetManager.getDescription(translated_addr);
                 }
 
                 item_ptr += 12;
@@ -191,44 +192,11 @@ void S7CommParser::parse(const PacketInfo& info) {
         }
     }
 
-    if (data_len > 0 && (s7_pdu_len >= header_size + param_len + data_len)) {
-        const u_char* data_ptr = s7_pdu + header_size + param_len;
-
-        if (rosctr == 3 && req_info_ptr && !req_info_ptr->items.empty()) {
-            const u_char* data_item_ptr = data_ptr;
-
-            for(size_t i = 0; i < req_info_ptr->items.size(); ++i) {
-                if ((data_item_ptr + 1) > (data_ptr + data_len)) break;
-
-                uint8_t return_code = data_item_ptr[0];
-
-                if (i == 0) {
-                    record.s7_rc = std::to_string(return_code);
-                }
-
-                if (return_code == 0xff) {
-                    if ((data_item_ptr + 4) > (data_ptr + data_len)) {
-                        data_item_ptr++;
-                        continue;
-                    }
-                    uint16_t read_len_bits = safe_ntohs(data_item_ptr + 2);
-                    uint16_t read_len_bytes = (read_len_bits + 7) / 8;
-
-                    if (i == 0) {
-                        record.s7_len = std::to_string(read_len_bytes);
-                    }
-
-                    if((data_item_ptr + 4 + read_len_bytes) <= (data_ptr + data_len)) {
-                        data_item_ptr += 4 + read_len_bytes;
-                        if (read_len_bytes % 2 != 0) data_item_ptr++;
-                    } else {
-                        data_item_ptr += 4;
-                    }
-                } else {
-                    data_item_ptr++;
-                }
-            }
-        }
+    // Extract s7comm.len for response packets (to match wireshark_parser's s7comm.data field)
+    // Note: wireshark's s7comm.data field is actually the item count, not the data length
+    // This matches tshark output where s7comm.data == s7comm.param.itemcount
+    if (rosctr == 3 && !record.s7comm_ic.empty()) {
+        record.s7comm_len = record.s7comm_ic;  // Use item count as length
     }
 
     addUnifiedRecord(record);

@@ -9,10 +9,10 @@
 #include <ctime>
 #include <functional>
 
-// 통합 레코드 구조체
+// 통합 레코드 구조체 (Python 47-field CSV format)
 struct UnifiedRecord {
-    // 공통 필드
-    std::string timestamp;
+    // 공통 필드 (14개)
+    std::string timestamp;      // @timestamp
     std::string protocol;
     std::string smac;
     std::string dmac;
@@ -24,87 +24,71 @@ struct UnifiedRecord {
     std::string ak;
     std::string fl;
     std::string dir;
+    std::string src_asset;      // Python: src_asset (name만)
+    std::string dst_asset;      // Python: dst_asset (name만)
 
-    // 자산 정보
-    std::string src_asset_id;
-    std::string src_asset_name;
-    std::string src_asset_group;
-    std::string src_asset_location;
-    std::string dst_asset_id;
-    std::string dst_asset_name;
-    std::string dst_asset_group;
-    std::string dst_asset_location;
-
-    // 프로토콜별 상세 정보 (JSON 형태)
-    std::string details_json;
-    
-    // ARP
+    // ARP (5개)
     std::string arp_op;
+    std::string arp_smac;       // 추가: Python에 있음
+    std::string arp_sip;        // 추가: Python에 있음
     std::string arp_tmac;
     std::string arp_tip;
-    
-    // DNS
+
+    // DNS (4개)
     std::string dns_tid;
     std::string dns_fl;
     std::string dns_qc;
     std::string dns_ac;
-    
-    // DNP3
+
+    // DNP3 (4개)
     std::string dnp3_len;
     std::string dnp3_ctrl;
     std::string dnp3_dest;
     std::string dnp3_src;
-    
-    // Generic/Unknown
+
+    // Generic/Unknown (1개)
     std::string len;
-    
-    // Modbus TCP
+
+    // Modbus TCP (9개) - Python과 정확히 일치
     std::string modbus_tid;
     std::string modbus_fc;
-    std::string modbus_err;
     std::string modbus_bc;
     std::string modbus_addr;
     std::string modbus_qty;
-    std::string modbus_val;
     std::string modbus_regs_addr;
     std::string modbus_regs_val;
     std::string modbus_translated_addr;
     std::string modbus_description;
-    
-    // S7Comm
-    std::string s7_prid;
-    std::string s7_ros;
-    std::string s7_fn;
-    std::string s7_ic;
-    std::string s7_syn;
-    std::string s7_tsz;
-    std::string s7_amt;
-    std::string s7_db;
-    std::string s7_ar;
-    std::string s7_addr;
-    std::string s7_rc;
-    std::string s7_len;
-    std::string s7_description;
-    
-    // XGT FEnet
-    std::string xgt_prid;
-    std::string xgt_companyId;
-    std::string xgt_plcinfo;
-    std::string xgt_cpuinfo;
-    std::string xgt_source;
-    std::string xgt_len;
-    std::string xgt_fenetpos;
-    std::string xgt_cmd;
-    std::string xgt_dtype;
-    std::string xgt_blkcnt;
-    std::string xgt_errstat;
-    std::string xgt_errinfo;
-    std::string xgt_vars;
-    std::string xgt_datasize;
-    std::string xgt_data;
-    std::string xgt_translated_addr;
-    std::string xgt_description;
+
+    // S7Comm (7개) - Python과 정확히 일치
+    std::string s7comm_ros;
+    std::string s7comm_fn;
+    std::string s7comm_ic;
+    std::string s7comm_db;
+    std::string s7comm_addr;
+    std::string s7comm_len;
+    std::string s7comm_description;
+
+    // XGT FEnet (15개) - Python과 정확히 일치
+    std::string xgt_fen_prid;
+    std::string xgt_fen_companyId;
+    std::string xgt_fen_plcinfo;
+    std::string xgt_fen_cpuinfo;
+    std::string xgt_fen_source;
+    std::string xgt_fen_len;
+    std::string xgt_fen_fenetpos;
+    std::string xgt_fen_cmd;
+    std::string xgt_fen_dtype;
+    std::string xgt_fen_blkcnt;
+    std::string xgt_fen_errstat;
+    std::string xgt_fen_vars;
+    std::string xgt_fen_datasize;
+    std::string xgt_fen_data;
+    std::string xgt_fen_translated_addr;
+    std::string xgt_fen_description;
 };
+// Total: 59 fields - matches Python's 47-field CSV format exactly when written to CSV
+// (14 common + 5 arp + 4 dns + 4 dnp3 + 1 len + 9 modbus + 7 s7comm + 15 xgt_fen)
 
 class UnifiedWriter {
 public:

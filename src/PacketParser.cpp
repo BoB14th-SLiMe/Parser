@@ -26,6 +26,7 @@
 #include "./protocols/UnknownParser.h"
 #include "./protocols/ArpParser.h"
 #include "./protocols/TcpSessionParser.h"
+#include "./protocols/UdpSessionParser.h"
 
 static std::string mac_to_string_helper(const uint8_t* mac) {
     std::stringstream ss;
@@ -40,15 +41,15 @@ static std::string format_timestamp(const struct timeval& ts) {
     char buf[sizeof "2011-10-08T07:07:09.000000Z"];
     char buft[sizeof "2011-10-08T07:07:09"];
     time_t sec = ts.tv_sec;
-    struct tm gmt;
+    struct tm local_tm;
 
     #ifdef _WIN32
-        gmtime_s(&gmt, &sec);
+        localtime_s(&local_tm, &sec);
     #else
-        gmtime_r(&sec, &gmt);
+        localtime_r(&sec, &local_tm);
     #endif
 
-    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%S", &gmt);
+    strftime(buft, sizeof buft, "%Y-%m-%dT%H:%M:%S", &local_tm);
     snprintf(buf, sizeof buf, "%.*s.%06dZ", (int)sizeof(buft) - 1, buft, (int)ts.tv_usec);
     return std::string(buf);
 }
@@ -130,19 +131,24 @@ PacketParser::PacketParser(const std::string& output_dir,
 void PacketParser::createParsersForWorker(int worker_id) {
     auto& parsers = m_worker_parsers[worker_id];
     
+    // Parser 순서: 구체적인 프로토콜 → 일반 프로토콜 → tcp/udp → unknown
     parsers.push_back(std::make_unique<ArpParser>());
-    parsers.push_back(std::make_unique<TcpSessionParser>());
     parsers.push_back(std::make_unique<ModbusParser>(m_assetManager));
     parsers.push_back(std::make_unique<S7CommParser>(m_assetManager));
     parsers.push_back(std::make_unique<XgtFenParser>(m_assetManager));
     parsers.push_back(std::make_unique<Dnp3Parser>());
-    parsers.push_back(std::make_unique<GenericParser>("dhcp"));
+    // dhcp는 Python에 없음 - udp로 분류되도록 제거
+    // parsers.push_back(std::make_unique<GenericParser>("dhcp"));
     parsers.push_back(std::make_unique<DnsParser>());
     parsers.push_back(std::make_unique<GenericParser>("ethernet_ip"));
     parsers.push_back(std::make_unique<GenericParser>("iec104"));
-    parsers.push_back(std::make_unique<GenericParser>("mms"));
+    // mms는 포트 102가 아님 - S7comm이 102를 사용하므로 제거
+    // parsers.push_back(std::make_unique<GenericParser>("mms"));
     parsers.push_back(std::make_unique<GenericParser>("opc_ua"));
     parsers.push_back(std::make_unique<GenericParser>("bacnet"));
+    // TCP/UDP SessionParser는 마지막에 (fallback)
+    parsers.push_back(std::make_unique<TcpSessionParser>());
+    parsers.push_back(std::make_unique<UdpSessionParser>());
     parsers.push_back(std::make_unique<UnknownParser>());
 
     // AssetManager 설정 (모든 파서에)
@@ -216,30 +222,21 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             es_doc["src_mac"] = record.smac;
             es_doc["dst_mac"] = record.dmac;
             es_doc["direction"] = record.dir;
-            
-            // protocol_details 파싱 (details_json이 있는 경우만)
-            if (!record.details_json.empty()) {
-                try {
-                    es_doc["protocol_details"] = json::parse(record.details_json);
-                } catch (const std::exception& e) {
-                    std::cerr << "[WARN] JSON parsing error: " << e.what() << std::endl;
-                    es_doc["protocol_details"] = json::object();
-                }
-            } else {
-                es_doc["protocol_details"] = json::object();
-            }
-            
-            // 프로토콜별 중요 필드 추출 (기존과 동일)
+
+            // Python과 일치: details_json 필드 제거됨 (프로토콜별 필드를 직접 사용)
+            es_doc["protocol_details"] = json::object();
+
+            // 프로토콜별 중요 필드 추출 - 필드명 업데이트
             if (record.protocol == "modbus") {
                 if (!record.modbus_fc.empty()) es_doc["modbus_function"] = record.modbus_fc;
                 if (!record.modbus_addr.empty()) es_doc["modbus_address"] = record.modbus_addr;
                 if (!record.modbus_description.empty()) es_doc["description"] = record.modbus_description;
             } else if (record.protocol == "s7comm") {
-                if (!record.s7_fn.empty()) es_doc["s7_function"] = record.s7_fn;
-                if (!record.s7_description.empty()) es_doc["description"] = record.s7_description;
+                if (!record.s7comm_fn.empty()) es_doc["s7_function"] = record.s7comm_fn;
+                if (!record.s7comm_description.empty()) es_doc["description"] = record.s7comm_description;
             } else if (record.protocol == "xgt_fen") {
-                if (!record.xgt_cmd.empty()) es_doc["xgt_command"] = record.xgt_cmd;
-                if (!record.xgt_description.empty()) es_doc["description"] = record.xgt_description;
+                if (!record.xgt_fen_cmd.empty()) es_doc["xgt_command"] = record.xgt_fen_cmd;
+                if (!record.xgt_fen_description.empty()) es_doc["description"] = record.xgt_fen_description;
             }
             
             // 자산 정보 추가 (기존과 동일)
@@ -285,26 +282,12 @@ void PacketParser::sendToBackends(const UnifiedRecord& record) {
             redis_data.fl = record.fl;
             redis_data.dir = record.dir;
 
-            // 자산 정보 추가
-            redis_data.src_asset_id = record.src_asset_id;
-            redis_data.src_asset_name = record.src_asset_name;
-            redis_data.src_asset_group = record.src_asset_group;
-            redis_data.src_asset_location = record.src_asset_location;
-            redis_data.dst_asset_id = record.dst_asset_id;
-            redis_data.dst_asset_name = record.dst_asset_name;
-            redis_data.dst_asset_group = record.dst_asset_group;
-            redis_data.dst_asset_location = record.dst_asset_location;
+            // 자산 정보 추가 - Python과 일치 (src_asset, dst_asset만)
+            redis_data.src_asset_name = record.src_asset;
+            redis_data.dst_asset_name = record.dst_asset;
 
-            // protocol_details 파싱 (details_json이 있는 경우만)
-            if (!record.details_json.empty()) {
-                try {
-                    redis_data.protocol_details = json::parse(record.details_json);
-                } catch (const std::exception& e) {
-                    redis_data.protocol_details = json::object();
-                }
-            } else {
-                redis_data.protocol_details = json::object();
-            }
+            // Python과 일치: details_json 필드 제거됨
+            redis_data.protocol_details = json::object();
 
             std::string stream_name = RedisKeys::protocolStream(record.protocol);
             if (m_redis_cache->pushToStream(stream_name, redis_data)) {
@@ -549,10 +532,13 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
             info.payload_size = l7_payload_size;
             info.flow_id = get_canonical_flow_id(info.src_ip, info.src_port, info.dst_ip, info.dst_port);
 
+            // Update TCP relative sequence and acknowledgment numbers
+            updateTcpRelativeSequence(info);
+
             bool handled_by_specific_app_parser = false;
             for (const auto& parser : parsers) {
                 const auto& name = parser->getName();
-                if (name == "tcp_session" || name == "unknown" || name == "arp") {
+                if (name == "tcp" || name == "udp" || name == "unknown" || name == "arp") {
                     continue;
                 }
 
@@ -565,7 +551,7 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
 
             if (!handled_by_specific_app_parser) {
                 for (const auto& parser : parsers) {
-                    if (parser->getName() == "tcp_session") {
+                    if (parser->getName() == "tcp") {
                         parser->parse(info);
                         break;
                     }
@@ -601,7 +587,7 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
             bool specific_app_protocol_found = false;
             for (const auto& parser : parsers) {
                 const auto& name = parser->getName();
-                if (name == "tcp_session" || name == "unknown" || name == "arp") {
+                if (name == "tcp" || name == "udp" || name == "unknown" || name == "arp") {
                     continue;
                 }
 
@@ -614,12 +600,119 @@ void PacketParser::parsePacket(const struct pcap_pkthdr* header, const u_char* p
 
             if (!specific_app_protocol_found) {
                 for (const auto& parser : parsers) {
-                    if (parser->getName() == "unknown") {
+                    if (parser->getName() == "udp") {
                         parser->parse(info);
                         break;
                     }
                 }
             }
         }
+        // Python과 일치: 기타 IP 프로토콜도 unknown 처리
+        else {
+            PacketInfo info;
+            info.timestamp = format_timestamp(header->ts);
+            info.src_mac = src_mac_str;
+            info.dst_mac = dst_mac_str;
+            info.eth_type = eth_type;
+            info.src_ip = src_ip_str;
+            info.dst_ip = dst_ip_str;
+            info.src_port = 0;
+            info.dst_port = 0;
+            info.protocol = ip_header->p;  // ICMP, IGMP 등
+            info.tcp_seq = 0;
+            info.tcp_ack = 0;
+            info.tcp_flags = 0;
+            info.payload = l4_payload;
+            info.payload_size = l4_payload_size;
+            info.flow_id = get_canonical_flow_id(info.src_ip, info.src_port, info.dst_ip, info.dst_port);
+
+            for (const auto& parser : parsers) {
+                if (parser->getName() == "unknown") {
+                    parser->parse(info);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    // Python과 일치: IPv4가 아닌 기타 이더넷 패킷 (IPv6, LLDP 등)도 unknown 처리
+    PacketInfo info;
+    info.timestamp = format_timestamp(header->ts);
+    info.src_mac = src_mac_str;
+    info.dst_mac = dst_mac_str;
+    info.eth_type = eth_type;
+    info.payload = l3_payload;
+    info.payload_size = l3_payload_size;
+    info.protocol = 0;  // 알 수 없는 프로토콜
+
+    for (const auto& parser : parsers) {
+        if (parser->getName() == "unknown") {
+            parser->parse(info);
+            break;
+        }
+    }
+}
+void PacketParser::updateTcpRelativeSequence(PacketInfo& info) {
+    if (info.protocol != IPPROTO_TCP) {
+        return;  // Only process TCP packets
+    }
+
+    std::lock_guard<std::mutex> lock(m_tcp_sessions_mutex);
+
+    // Create session keys for both directions
+    TcpSessionKey forward_key;
+    forward_key.src_ip = info.src_ip;
+    forward_key.src_port = info.src_port;
+    forward_key.dst_ip = info.dst_ip;
+    forward_key.dst_port = info.dst_port;
+
+    TcpSessionKey reverse_key;
+    reverse_key.src_ip = info.dst_ip;
+    reverse_key.src_port = info.dst_port;
+    reverse_key.dst_ip = info.src_ip;
+    reverse_key.dst_port = info.src_port;
+
+    // Get or create session state for this direction
+    TcpSessionState& forward_session = m_tcp_sessions[forward_key];
+    TcpSessionState& reverse_session = m_tcp_sessions[reverse_key];
+
+    // Calculate relative sequence number (based on this direction's initial seq)
+    if (!forward_session.seq_initialized) {
+        forward_session.initial_seq = info.tcp_seq;
+        forward_session.next_seq = info.tcp_seq;
+        forward_session.seq_initialized = true;
+        info.tcp_relative_seq = 1;  // First packet has relative seq = 1
+    } else {
+        // Calculate relative sequence number
+        if (info.tcp_seq >= forward_session.initial_seq) {
+            info.tcp_relative_seq = info.tcp_seq - forward_session.initial_seq + 1;
+        } else {
+            // Handle sequence number wraparound
+            info.tcp_relative_seq = (0xFFFFFFFF - forward_session.initial_seq) + info.tcp_seq + 2;
+        }
+    }
+
+    // Update next_seq for this direction (for ACK calculation in reverse direction)
+    forward_session.next_seq = info.tcp_seq + info.payload_size;
+
+    // Calculate relative acknowledgment number (based on reverse direction's next_seq)
+    if (info.tcp_ack != 0) {
+        if (!reverse_session.seq_initialized) {
+            // Reverse direction hasn't sent any packets yet
+            // We can't calculate relative ACK without knowing reverse's initial_seq
+            // Wireshark displays ACK=1 in this case
+            info.tcp_relative_ack = 1;
+        } else {
+            // Calculate relative ack based on reverse direction's initial seq
+            if (info.tcp_ack >= reverse_session.initial_seq) {
+                info.tcp_relative_ack = info.tcp_ack - reverse_session.initial_seq + 1;
+            } else {
+                // Handle wraparound
+                info.tcp_relative_ack = (0xFFFFFFFF - reverse_session.initial_seq) + info.tcp_ack + 2;
+            }
+        }
+    } else {
+        info.tcp_relative_ack = 0;  // No ACK in this packet
     }
 }

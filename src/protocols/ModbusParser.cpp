@@ -158,9 +158,8 @@ void ModbusParser::parse(const PacketInfo& info) {
     // UnifiedRecord 생성
     UnifiedRecord record = createUnifiedRecord(info, direction);
 
-    // Set Modbus datagram length (PDU length, not total TCP payload)
-    // This matches what Wireshark shows as "Len" in Modbus protocol
-    record.len = std::to_string(pdu_len);
+    // Set len to TCP payload length (to match wireshark_parser which uses tcp.len)
+    record.len = std::to_string(info.payload_size);
 
     // Modbus 필드 채우기
     record.modbus_tid = std::to_string(trans_id);
@@ -168,10 +167,8 @@ void ModbusParser::parse(const PacketInfo& info) {
     
     // Function code별 파싱
     if (pdu[0] & 0x80) {
-        // 에러 응답
-        if (pdu_len >= 2) {
-            record.modbus_err = std::to_string(pdu[1]);
-        }
+        // 에러 응답 - Python과 일치: modbus.err 필드 없음 (제거됨)
+        // 에러 정보는 modbus.fc의 최상위 비트로 판별 가능
     } else {
         switch (current_fc) {
             case 1: case 2: case 3: case 4: {
@@ -218,7 +215,8 @@ void ModbusParser::parse(const PacketInfo& info) {
             case 5: case 6: {
                 if (pdu_len >= 5) {
                     record.modbus_addr = std::to_string(safe_ntohs(pdu + 1));
-                    record.modbus_val = std::to_string(safe_ntohs(pdu + 3));
+                    // Python과 일치: modbus.val 필드 없음 (제거됨)
+                    // FC 5/6 (Write Single Coil/Register)의 값 정보는 별도 필드로 저장하지 않음
                 }
                 break;
             }

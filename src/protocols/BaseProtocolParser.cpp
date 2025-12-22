@@ -43,23 +43,35 @@ UnifiedRecord BaseProtocolParser::createUnifiedRecord(const PacketInfo& info, co
     record.sp = std::to_string(info.src_port);
     record.dip = info.dst_ip;
     record.dp = std::to_string(info.dst_port);
-    record.sq = std::to_string(info.tcp_seq);
-    record.ak = std::to_string(info.tcp_ack);
-    record.fl = std::to_string((int)info.tcp_flags);
+
+    // For UDP packets, set sq/ak/fl to 0 (to match wireshark_parser)
+    if (info.protocol == 17) {  // IPPROTO_UDP
+        record.sq = "0";
+        record.ak = "0";
+        record.fl = "0";
+    } else {
+        // Use relative sequence/ack numbers for TCP packets
+        record.sq = std::to_string(info.tcp_relative_seq);
+        record.ak = std::to_string(info.tcp_relative_ack);
+
+        // TCP flags를 16진수로 출력 (Python과 일치: 0x0018 형식)
+        std::stringstream ss_flags;
+        ss_flags << "0x" << std::setfill('0') << std::setw(4) << std::hex << static_cast<int>(info.tcp_flags);
+        record.fl = ss_flags.str();
+    }
+
     record.dir = direction;
 
-    // 자산 정보 추가
+    // 자산 정보 추가 - Python과 일치 (src_asset, dst_asset만)
     if (m_asset_manager) {
         std::string src_device = m_asset_manager->getDeviceName(info.src_ip);
         std::string dst_device = m_asset_manager->getDeviceName(info.dst_ip);
 
         if (!src_device.empty()) {
-            record.src_asset_name = src_device;
-            record.src_asset_id = info.src_ip;
+            record.src_asset = src_device;
         }
         if (!dst_device.empty()) {
-            record.dst_asset_name = dst_device;
-            record.dst_asset_id = info.dst_ip;
+            record.dst_asset = dst_device;
         }
     }
 

@@ -44,7 +44,7 @@ void DnsParser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << R"({"tid":)" << tid << R"(,"fl":)" << flags
                << R"(,"qc":)" << qdcount << R"(,"ac":)" << ancount << "}";
-    record.details_json = details_ss.str();
+    // Removed: record.details_json = details_ss.str();
     
     addUnifiedRecord(record);
 }

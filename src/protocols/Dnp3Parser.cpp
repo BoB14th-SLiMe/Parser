@@ -42,7 +42,7 @@ void Dnp3Parser::parse(const PacketInfo& info) {
     std::stringstream details_ss;
     details_ss << R"({"len":)" << (int)len << R"(,"ctrl":)" << (int)ctrl
                << R"(,"dest":)" << dest << R"(,"src":)" << src << "}";
-    record.details_json = details_ss.str();
+    // Removed: record.details_json = details_ss.str();
     
     addUnifiedRecord(record);
 }

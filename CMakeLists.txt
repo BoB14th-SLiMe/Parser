@@ -38,6 +38,7 @@ set(PROTOCOL_SOURCES
     src/protocols/UnknownParser.cpp
     src/protocols/ArpParser.cpp
     src/protocols/TcpSessionParser.cpp
+    src/protocols/UdpSessionParser.cpp
 )
 
 set(CORE_SOURCES

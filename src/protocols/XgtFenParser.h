@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <unordered_map>
+#include <mutex>
 
 struct XgtFenHeader {
     std::string companyId;
@@ -47,6 +49,12 @@ public:
 
 private:
     AssetManager& m_assetManager;
+
+    // XGT request-response matching (Python의 xgt_state와 동일)
+    // invoke_id → variable_name 매핑
+    std::unordered_map<uint16_t, std::string> m_xgt_state;
+    std::mutex m_state_mutex;  // 멀티스레드 안전성
+
     bool parseHeader(const u_char* payload, size_t size, XgtFenHeader& header);
     bool parseInstruction(const u_char* instruction_payload, size_t instruction_size, const XgtFenHeader& header, XgtFenInstruction& instruction);
     std::string bytesToHexString(const uint8_t* bytes, size_t size);

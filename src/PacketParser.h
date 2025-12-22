@@ -80,14 +80,41 @@ private:
     std::atomic<size_t> m_packets_processed;
     std::atomic<size_t> m_packets_queued;
 
+    // TCP relative sequence tracking
+    struct TcpSessionKey {
+        std::string src_ip;
+        uint16_t src_port;
+        std::string dst_ip;
+        uint16_t dst_port;
+
+        bool operator<(const TcpSessionKey& other) const {
+            if (src_ip != other.src_ip) return src_ip < other.src_ip;
+            if (src_port != other.src_port) return src_port < other.src_port;
+            if (dst_ip != other.dst_ip) return dst_ip < other.dst_ip;
+            return dst_port < other.dst_port;
+        }
+    };
+
+    struct TcpSessionState {
+        uint32_t initial_seq;
+        uint32_t next_seq;  // Next expected sequence number (initial_seq + total_bytes_sent)
+        bool seq_initialized;
+
+        TcpSessionState() : initial_seq(0), next_seq(0), seq_initialized(false) {}
+    };
+
+    std::map<TcpSessionKey, TcpSessionState> m_tcp_sessions;
+    std::mutex m_tcp_sessions_mutex;
+
     void workerThread(int worker_id);
     void parsePacket(const struct pcap_pkthdr* header, const u_char* packet, int worker_id);
     void createParsersForWorker(int worker_id);
     void realtimeFlushThread();
-    
+
     std::string get_canonical_flow_id(const std::string& ip1, uint16_t port1, const std::string& ip2, uint16_t port2);
-    
+
     void sendToBackends(const UnifiedRecord& record);
+    void updateTcpRelativeSequence(PacketInfo& info);
 };
 
 

@@ -32,7 +32,7 @@ void GenericParser::parse(const PacketInfo& info) {
     
     std::stringstream details_ss;
     details_ss << R"({"len":)" << info.payload_size << "}";
-    record.details_json = details_ss.str();
+    // Removed: record.details_json = details_ss.str();
     
     addUnifiedRecord(record);
 }

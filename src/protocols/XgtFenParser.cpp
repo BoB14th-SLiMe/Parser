@@ -138,8 +138,9 @@ bool XgtFenParser::parseInstruction(const u_char* inst_payload, size_t inst_size
         if (is_read_cmd) {
             if (instruction.is_continuous) {
                 // === 연속 읽기 응답 ===
-                // 블록 개수는 이미 읽음 (항상 1)
-                
+                // 블록 개수는 항상 1 (errorInfoOrBlockCount에서 읽은 값)
+                instruction.blockCount = instruction.errorInfoOrBlockCount;
+
                 // 데이터 크기 (2 bytes)
                 if (inst_size < offset + 2) {
                     std::cerr << "[XGT] Missing data size for continuous read response" << std::endl;
@@ -150,11 +151,11 @@ bool XgtFenParser::parseInstruction(const u_char* inst_payload, size_t inst_size
 
                 // 데이터 읽기
                 if (inst_size < offset + instruction.dataSize) {
-                    std::cerr << "[XGT] Insufficient data: expected " << instruction.dataSize 
+                    std::cerr << "[XGT] Insufficient data: expected " << instruction.dataSize
                               << ", available " << (inst_size - offset) << std::endl;
                     return false;
                 }
-                instruction.continuousReadData.assign(inst_payload + offset, 
+                instruction.continuousReadData.assign(inst_payload + offset,
                                                      inst_payload + offset + instruction.dataSize);
                 offset += instruction.dataSize;
             } else {
@@ -329,28 +330,47 @@ void XgtFenParser::parse(const PacketInfo& info) {
     // UnifiedRecord 생성
     UnifiedRecord record = createUnifiedRecord(info, direction);
 
-    // Set XGT-FEN datagram length (instruction data length from header)
-    // This is the application layer data length, not including the 20-byte XGT header
-    record.len = std::to_string(header.length);
+    // Set XGT-FEN datagram length (TCP payload length to match wireshark_parser)
+    // This includes the 20-byte XGT header + instruction data
+    record.len = std::to_string(info.payload_size);
 
-    // XGT 공통 필드
-    record.xgt_prid = std::to_string(header.invokeId);
-    record.xgt_companyId = header.companyId;
-    record.xgt_plcinfo = std::to_string(header.plcInfo);
-    record.xgt_cpuinfo = std::to_string(header.cpuInfo);
-    record.xgt_source = std::to_string(header.sourceOfFrame);
-    record.xgt_len = std::to_string(header.length);
-    record.xgt_fenetpos = std::to_string(header.fenetPosition);
+    // XGT 공통 필드 - Python 필드명과 일치 (xgt_fen_*), 16진수 형식 사용
+    record.xgt_fen_prid = std::to_string(header.invokeId);
+    record.xgt_fen_companyId = header.companyId;
+
+    // plcinfo, cpuinfo, source는 16진수로 출력 (Python과 일치)
+    std::stringstream ss_plcinfo, ss_cpuinfo, ss_source;
+    ss_plcinfo << "0x" << std::setfill('0') << std::setw(4) << std::hex << header.plcInfo;
+    ss_cpuinfo << "0x" << std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(header.cpuInfo);
+    ss_source << "0x" << std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(header.sourceOfFrame);
+
+    record.xgt_fen_plcinfo = ss_plcinfo.str();
+    record.xgt_fen_cpuinfo = ss_cpuinfo.str();
+    record.xgt_fen_source = ss_source.str();
+    record.xgt_fen_len = std::to_string(header.length);
+
+    // fenetpos는 16진수로 출력
+    std::stringstream ss_fenetpos;
+    ss_fenetpos << "0x" << std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(header.fenetPosition);
+    record.xgt_fen_fenetpos = ss_fenetpos.str();
 
     if (parse_success) {
-        record.xgt_cmd = std::to_string(instruction.command);
-        record.xgt_dtype = std::to_string(instruction.dataType);
-        record.xgt_blkcnt = std::to_string(instruction.blockCount);
-        record.xgt_errstat = std::to_string(instruction.errorStatus);
-        record.xgt_errinfo = std::to_string(instruction.errorInfoOrBlockCount);
-        
-        if (instruction.dataSize > 0) {
-            record.xgt_datasize = std::to_string(instruction.dataSize);
+        // cmd, dtype, errstat는 16진수로 출력
+        std::stringstream ss_cmd, ss_dtype, ss_errstat;
+        ss_cmd << "0x" << std::setfill('0') << std::setw(4) << std::hex << instruction.command;
+        ss_dtype << "0x" << std::setfill('0') << std::setw(4) << std::hex << instruction.dataType;
+        ss_errstat << "0x" << std::setfill('0') << std::setw(4) << std::hex << instruction.errorStatus;
+
+        record.xgt_fen_cmd = ss_cmd.str();
+        record.xgt_fen_dtype = ss_dtype.str();
+        record.xgt_fen_blkcnt = std::to_string(instruction.blockCount);  // blkcnt는 10진수
+
+        // Only set errstat and datasize for response packets (to match wireshark_parser)
+        if (direction == "response") {
+            record.xgt_fen_errstat = ss_errstat.str();
+            if (instruction.dataSize > 0) {
+                record.xgt_fen_datasize = std::to_string(instruction.dataSize);
+            }
         }
 
         // Variables
@@ -363,38 +383,107 @@ void XgtFenParser::parse(const PacketInfo& info) {
                 if (i < instruction.variables.size() - 1) vars_csv += ";";
             }
         }
-        record.xgt_vars = vars_csv;
 
-        // Data
+        // XGT Request-Response matching (Python: parser_common.py lines 589-605)
+        uint16_t invoke_id = header.invokeId;
+        if (direction == "request" && !vars_csv.empty()) {
+            // Request: Store vars in state for later response matching
+            std::lock_guard<std::mutex> lock(m_state_mutex);
+            m_xgt_state[invoke_id] = vars_csv;
+            // Do NOT add vars to request output (to match wireshark_parser)
+            // But keep vars_csv for internal use (translated_addr, description)
+        } else if (direction == "response" && vars_csv.empty()) {
+            // Response: Look up vars from request using invoke_id
+            std::lock_guard<std::mutex> lock(m_state_mutex);
+            auto it = m_xgt_state.find(invoke_id);
+            if (it != m_xgt_state.end()) {
+                vars_csv = it->second;
+                // Clean up state after use
+                m_xgt_state.erase(it);
+            }
+        }
+
+        // Set vars for both request and response packets (to match wireshark_parser)
+        if (!vars_csv.empty()) {
+            record.xgt_fen_vars = vars_csv;
+        }
+
+        // Python 로직 구현: Continuous block response를 여러 WORD로 분리 (multi-row)
+        // Python: parser_common.py lines 607-665
+        if (!instruction.continuousReadData.empty() &&
+            instruction.continuousReadData.size() > 2 &&
+            direction == "response") {
+
+            // Continuous block 데이터를 2-byte WORD로 분리
+            std::vector<uint16_t> word_values;
+            for (size_t i = 0; i + 1 < instruction.continuousReadData.size(); i += 2) {
+                uint16_t word = (static_cast<uint16_t>(instruction.continuousReadData[i+1]) << 8) |
+                               instruction.continuousReadData[i];
+                word_values.push_back(word);
+            }
+
+            // Python처럼 각 word마다 별도 row 생성 (주소 증가 포함)
+            if (word_values.size() > 1) {
+                // Base address 추출 (Python 로직: parser_common.py lines 632-653)
+                std::string base_translated = m_assetManager.translateXgtAddress(vars_csv);
+                std::string mem_type;
+                int base_addr = 0;
+
+                // Extract memory type and base address (e.g., "D523" → mem_type="D", base_addr=523)
+                size_t i = 0;
+                while (i < base_translated.size() && !std::isdigit(base_translated[i])) {
+                    mem_type += base_translated[i];
+                    i++;
+                }
+                if (i < base_translated.size()) {
+                    base_addr = std::stoi(base_translated.substr(i));
+                }
+
+                // Create one row per word with incremented address
+                for (size_t idx = 0; idx < word_values.size(); ++idx) {
+                    UnifiedRecord row = record;  // Copy base record
+                    row.xgt_fen_data = std::to_string(word_values[idx]);
+
+                    // Calculate incremented address for this word
+                    int incremented_addr = base_addr + static_cast<int>(idx);
+                    std::string translated = mem_type + std::to_string(incremented_addr);
+
+                    row.xgt_fen_translated_addr = translated;
+                    row.xgt_fen_description = m_assetManager.getDescription(translated);
+
+                    addUnifiedRecord(row);
+                }
+                return;  // Multi-row 생성 완료
+            }
+        }
+
+        // Single word or non-continuous data - single row
+        // Note: wireshark_parser does not output data field for response packets
         std::string data_csv;
-        if (!instruction.continuousReadData.empty()) {
-            data_csv = bytesToHexString(instruction.continuousReadData.data(), 
-                                       instruction.continuousReadData.size());
-        } else if (!instruction.readData.empty()) {
-            data_csv = bytesToHexString(instruction.readData[0].second.data(), 
-                                       instruction.readData[0].second.size());
-            if(instruction.readData.size() > 1) 
-                data_csv += "...(" + std::to_string(instruction.readData.size()) + " items)";
-        } else if (!instruction.writeData.empty()) {
-            data_csv = bytesToHexString(instruction.writeData[0].second.data(), 
-                                       instruction.writeData[0].second.size());
-            if(instruction.writeData.size() > 1) 
-                data_csv += "...(" + std::to_string(instruction.writeData.size()) + " items)";
+        if (direction == "request") {
+            // Only output data for request packets (to match wireshark_parser)
+            if (!instruction.continuousReadData.empty()) {
+                data_csv = bytesToHexString(instruction.continuousReadData.data(),
+                                           instruction.continuousReadData.size());
+            } else if (!instruction.readData.empty()) {
+                data_csv = bytesToHexString(instruction.readData[0].second.data(),
+                                           instruction.readData[0].second.size());
+                if(instruction.readData.size() > 1)
+                    data_csv += "...(" + std::to_string(instruction.readData.size()) + " items)";
+            } else if (!instruction.writeData.empty()) {
+                data_csv = bytesToHexString(instruction.writeData[0].second.data(),
+                                           instruction.writeData[0].second.size());
+                if(instruction.writeData.size() > 1)
+                    data_csv += "...(" + std::to_string(instruction.writeData.size()) + " items)";
+            }
+            record.xgt_fen_data = data_csv;
         }
-        record.xgt_data = data_csv;
 
-        // Translated address 및 description
-        std::string primary_var_name;
-        if (!instruction.variableName.empty()) {
-            primary_var_name = instruction.variableName;
-        } else if (!instruction.variables.empty()) {
-            primary_var_name = instruction.variables[0].second;
-        }
-        
-        if (!primary_var_name.empty()) {
-            std::string translatedAddr = m_assetManager.translateXgtAddress(primary_var_name);
-            record.xgt_translated_addr = translatedAddr;
-            record.xgt_description = m_assetManager.getDescription(translatedAddr);
+        // Translated address 및 description (response only, Python과 일치)
+        if (direction == "response" && !vars_csv.empty()) {
+            std::string translatedAddr = m_assetManager.translateXgtAddress(vars_csv);
+            record.xgt_fen_translated_addr = translatedAddr;
+            record.xgt_fen_description = m_assetManager.getDescription(translatedAddr);
         }
     }
 

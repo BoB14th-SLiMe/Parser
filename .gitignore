@@ -7,6 +7,11 @@
 /output
 /pcap
 /assets
+/CMakeFiles
+cmake_install.cmake
+CMakeCache.txt
+Makefile
+parser
 
 *.log
 *.tmp

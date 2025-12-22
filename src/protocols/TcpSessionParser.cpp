@@ -7,12 +7,12 @@ TcpSessionParser::TcpSessionParser() {}
 TcpSessionParser::~TcpSessionParser() {}
 
 std::string TcpSessionParser::getName() const {
-    return "tcp_session";
+    return "tcp";  // Python과 일치: "tcp_session" → "tcp"
 }
 
 bool TcpSessionParser::isProtocol(const PacketInfo& info) const {
-    (void)info;  // 경고 제거
-    return true;
+    // TCP 프로토콜만 처리 (Python과 일치)
+    return (info.protocol == 6);  // IPPROTO_TCP
 }
 
 void TcpSessionParser::parse(const PacketInfo& info) {
@@ -27,7 +27,7 @@ void TcpSessionParser::parse(const PacketInfo& info) {
                << R"(,"ack":)" << ((info.tcp_flags & TH_ACK) ? 1 : 0)
                << R"(,"fin":)" << ((info.tcp_flags & TH_FIN) ? 1 : 0)
                << R"(,"rst":)" << ((info.tcp_flags & TH_RST) ? 1 : 0) << "}}";
-    record.details_json = details_ss.str();
+    // Removed: record.details_json = details_ss.str();
 
     addUnifiedRecord(record);
 }

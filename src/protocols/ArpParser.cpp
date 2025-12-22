@@ -36,24 +36,30 @@ void ArpParser::parse(const PacketInfo& info) {
     std::string sha_str = mac_to_string(arp_header->sha);
     std::string tha_str = mac_to_string(arp_header->tha);
 
-    std::string direction = (op_code == 1) ? "request" : (op_code == 2 ? "response" : "other");
+    // Create UnifiedRecord manually to match wireshark_parser's ARP handling
+    // wireshark_parser leaves sp/dp empty and sets sq/ak/fl/len to "0" for ARP
+    UnifiedRecord record;
+    record.timestamp = info.timestamp;
+    record.protocol = getName();
+    record.smac = info.src_mac;
+    record.dmac = info.dst_mac;
+    record.sip = "";  // ARP doesn't have IP in the same way
+    record.sp = "";   // ARP doesn't have ports
+    record.dip = "";
+    record.dp = "";
+    record.sq = "0";  // ARP doesn't have sequence numbers
+    record.ak = "0";  // ARP doesn't have ack numbers
+    record.fl = "0";  // ARP doesn't have flags
+    record.dir = "unknown";  // wireshark_parser sets ARP dir to "unknown"
+    record.len = "0";  // wireshark_parser sets ARP len to "0"
+    // Note: ARP packets don't have src_asset/dst_asset in wireshark_parser (no IP layer)
 
-    UnifiedRecord record = createUnifiedRecord(info, direction);
-
-    // Set payload length (common field for all protocols)
-    record.len = std::to_string(info.payload_size);
-
+    // Python과 일치: arp.op, arp.smac, arp.sip, arp.tmac, arp.tip
     record.arp_op = std::to_string(op_code);
+    record.arp_smac = sha_str;
+    record.arp_sip = spa_str;
     record.arp_tmac = tha_str;
     record.arp_tip = tpa_str;
-    
-    std::stringstream details_ss;
-    details_ss << R"({"op":)" << op_code 
-               << R"(,"smac":")" << sha_str << R"(",)"
-               << R"("sip":")" << spa_str << R"(",)"
-               << R"("tmac":")" << tha_str << R"(",)"
-               << R"("tip":")" << tpa_str << R"("})";
-    record.details_json = details_ss.str();
-    
+
     addUnifiedRecord(record);
 }
