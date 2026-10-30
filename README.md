@@ -152,12 +152,15 @@ sudo yum install -y \
     libcurl-devel \
     hiredis-devel \
     json-devel
+
+# macOS (Homebrew)
+brew install cmake pkg-config libpcap hiredis nlohmann-json
 ```
 
 ### 빌드
 
 ```bash
-cd /home/ryuoo0/Parser
+cd Parser
 
 # Clean build
 make clean && make
@@ -166,6 +169,17 @@ make clean && make
 mkdir -p build && cd build
 cmake ..
 make -j$(nproc)
+```
+
+#### macOS 빌드
+
+Homebrew의 libpcap은 keg-only라 pkg-config가 찾지 못하고, `CMakeLists.txt`가 라이브러리 이름만 링크하므로 경로를 직접 지정해야 합니다.
+
+```bash
+PKG_CONFIG_PATH=/opt/homebrew/opt/libpcap/lib/pkgconfig \
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/opt/libpcap/lib -L/opt/homebrew/lib"
+cmake --build build -j
 ```
 
 ### Docker
@@ -432,11 +446,35 @@ unknown:         191 packets (0.2%)
 
 | 항목 | 성능 |
 |------|------|
-| 처리량 | 50,000+ pps |
-| 메모리 | 낮음 (native C++) |
+| 처리량 | 약 100,000 pps (threads=1, 학습 모드) |
+| 메모리 | 입력 크기에 비례해 증가 (아래 알려진 이슈 참고) |
 | 지연시간 (Redis) | <0.5ms (비동기) |
 | 지연시간 (ES) | <5ms (벌크) |
-| CPU 사용 | 멀티코어 최적화 |
+
+### 벤치마크 (wireshark_parser 대비)
+
+`capture.pcap` (1,938,179 packets, 181 MiB), Apple M3 Pro / 18 GB, 학습 모드(`-p`, 롤링 없음), C++은 5회 중앙값.
+
+| 케이스 | 시간 | CPU | 최대 RSS | 처리량 |
+|---|---|---|---|---|
+| C++ `--threads 1` | 18.97s | 23.1s | 9,139 MiB | 102,158 pps |
+| C++ `--threads 2` | 15.79s | 23.1s | 8,037 MiB | 122,750 pps |
+| C++ `--threads 4` | 14.99s | 26.3s | 8,028 MiB | 129,337 pps |
+| wireshark_parser (`train.py`) | 458.57s | 645.1s | 1,143 MiB | 4,227 pps |
+
+- 출력 행 수는 양쪽 모두 2,772,932로 동일하며, `--threads 1` 기준 필드 일치율은 94.2%입니다.
+- 남은 차이: `modbus.translated_addr`를 C++은 요청 행에도 채우고 Python은 응답 행에만 채움(158,913행), C++이 `unknown`으로 분류한 713행을 tshark는 `udp`/`dns` 등으로 분류.
+
+### ⚠️ 알려진 이슈
+
+1. **`--threads` ≥ 2에서 출력이 부정확함**
+   - 모든 워커가 하나의 큐에서 임의의 패킷을 가져가지만, 요청 정보를 저장하는 프로토콜 파서는 워커별로 따로 있습니다.
+   - 같은 세션의 요청과 응답이 다른 워커로 가면 XGT 응답의 `xgt_fen.vars`/`xgt_fen.translated_addr`가 비고, Modbus `modbus.regs.addr`가 틀어집니다. (`--threads 4`에서 약 53만 행)
+   - 정확한 결과가 필요하면 `--threads 1`을 사용하세요. 수정 방향: 5-tuple 해시로 세션별 워커 고정 배정.
+2. **메모리가 입력 크기에 비례해 증가함** (대용량 PCAP에서 OOM 가능)
+   - 롤링 없이(`-r 0`) 실행하면 `UnifiedWriter`가 모든 레코드를 메모리에 보관했다가 종료 시 한 번에 기록합니다.
+   - 패킷 큐(`m_packet_queue`)에 상한이 없어 파싱보다 읽기가 빠르면 패킷 사본이 쌓입니다.
+   - 약 194만 패킷에서 8~9 GiB를 사용합니다. 대용량 PCAP은 `-r` 롤링 옵션 사용을 권장합니다. 수정 방향: bounded queue + 주기적 flush.
 
 ## 📈 성능 최적화
 
